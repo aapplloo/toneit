@@ -320,6 +320,7 @@ textarea.code { width: 100%; border: 0; border-radius: 14px; background: var(--f
 .modal textarea.code { min-height: 0; height: 64px; white-space: normal; }
 .tagpick .tonetag { pointer-events: auto; height: 32px; line-height: 32px; padding: 0 14px; border-radius: 16px; }
 .tline .tonetag { height: 22px; line-height: 22px; padding: 0 9px; border-radius: 11px; }
+.mixnote { margin-top: 10px; line-height: 1.5; background: #fff7ed; color: #9a4a12; border-radius: 12px; padding: 10px 12px; }
 
 </style>
 </head>
@@ -419,6 +420,7 @@ textarea.code { width: 100%; border: 0; border-radius: 14px; background: var(--f
         <button type="button" data-ab="mine" aria-pressed="false">내 톤만</button>
       </div>
       <div class="sliders two" id="mixSliders"></div>
+      <p class="note mixnote" id="iosYtNote" hidden>아이폰·아이패드에서는 애플 정책 때문에 앱이 YouTube 소리 크기를 바꿀 수 없어요. 폰 볼륨을 낮추고 <b>내 톤 볼륨</b>을 올려서 균형을 맞추세요. 원곡 볼륨을 끝까지 내리면 원곡은 음소거돼요. 원곡을 <b>음악 파일</b>로 올리면 원곡 볼륨도 자유롭게 조절돼요.</p>
     </div>
   </section>
 
@@ -4737,7 +4739,14 @@ var Backing = (function () {
       if (!yt.player || !yt.ready || !yt.player.getCurrentTime) return null;
       return { cur: yt.player.getCurrentTime(), state: yt.player.getPlayerState(), a: yt.a, b: yt.b, rate: yt.rate };
     },
-    ytVolume: function (v) { if (yt.player && yt.player.setVolume) yt.player.setVolume(Math.round(v * 100)); },
+    ytVolume: function (v) {
+      if (!yt.player || !yt.player.setVolume) return;
+      try {
+        if (v <= 0.001) { yt.player.mute(); return; }
+        if (yt.player.isMuted && yt.player.isMuted()) yt.player.unMute();
+        yt.player.setVolume(Math.max(1, Math.round(v * 100)));
+      } catch (e) { }
+    },
     stopAll: function () { stopFile(); if (yt.player && yt.player.pauseVideo && mode === 'yt') { try { yt.player.pauseVideo(); } catch (e) { } } },
     region: region, setRegion: setRegion, regionLen: function () { var r = region(); return Math.max(0, r.b - r.a); },
     currentTime: currentTime,
@@ -6364,6 +6373,7 @@ var ToneShare = (function () {
 
 /* ===== App wiring ===== */
 var WEB_URL = 'https://aapplloo.github.io/toneit/';
+var IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 var App = (function () {
   'use strict';
   var current = { kind: null, text: '', score: null, pdf: null, track: 0, baseTuning: null };
@@ -6640,6 +6650,7 @@ var App = (function () {
   function setBkMode(m) {
     $$('#bkMode button').forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.m === m)); });
     $('#bkYt').hidden = m !== 'yt'; $('#bkFile').hidden = m !== 'file';
+    $('#iosYtNote').hidden = !(m === 'yt' && IS_IOS);
     if (m === 'yt') {
       Backing.loadYtApi().then(function () {
         $('#ytBlocked').hidden = true; $('#ytUi').hidden = false;
@@ -6831,18 +6842,22 @@ var App = (function () {
     dz.addEventListener('drop', function (e) { e.preventDefault(); dz.classList.remove('over'); var f = e.dataTransfer.files[0]; if (f) loadAudio(f); });
     Backing.on(function (what) {
       if (what === 'file' || what === 'yt' || what === 'region' || what === 'offset') refreshRegion();
+      if (what === 'yt') mix(); // a new YouTube player starts at its own volume
       if (String(what).indexOf('yterror') === 0) toast('이 영상은 외부 재생이 막혀 있어요. 다른 영상을 골라 주세요.');
     });
     $('#setA').addEventListener('click', function () { var t = Backing.currentTime(); if (t == null) { toast('원곡이 재생 중일 때 눌러 주세요'); return; } var r = Backing.region(); Backing.setRegion(t, Math.max(t + 0.5, r.b)); });
     $('#setB').addEventListener('click', function () { var t = Backing.currentTime(); if (t == null) { toast('원곡이 재생 중일 때 눌러 주세요'); return; } var r = Backing.region(); Backing.setRegion(Math.min(r.a, t - 0.5), t); });
     $$('[data-off]').forEach(function (b) { b.addEventListener('click', function () { Backing.setOffsetMs(Backing.offsetMs() + parseInt(b.dataset.off, 10)); }); });
-    var mixBack = HSlider({ label: '원곡 볼륨', min: 0, max: 1, value: 0.8, def: 0.8, step: 0.01, fmt: 'pct', color: '#ff8a3d', onChange: function () { mix(); } });
-    var mixTone = HSlider({ label: '내 톤 볼륨', min: 0, max: 1.2, value: 0.9, def: 0.9, step: 0.01, fmt: 'pct', onChange: function () { mix(); } });
+    // 원곡: the slider is squared so the quiet end has room (50% on the slider = a quarter of the level)
+    var mixBack = HSlider({ label: '원곡 볼륨', min: 0, max: 1, value: 0.85, def: 0.85, step: 0.01, fmt: 'pct', color: '#ff8a3d', onChange: function () { mix(); } });
+    // 내 톤: up to 300% so it can sit on top of a loud original (the master limiter keeps it from clipping)
+    var mixTone = HSlider({ label: '내 톤 볼륨', min: 0, max: 3, value: 0.9, def: 0.9, step: 0.01, fmt: 'pct', onChange: function () { mix(); } });
     $('#mixSliders').appendChild(mixBack.el); $('#mixSliders').appendChild(mixTone.el);
     var mix = function () {
       var ab = $('#abSeg').dataset.v || 'both', back = mixBack.get(), tone = mixTone.get();
       if (ab === 'orig') tone = 0; if (ab === 'mine') back = 0;
-      Engine.setMix(tone, back); Backing.ytVolume(Math.min(1, back));
+      var b2 = back * back;
+      Engine.setMix(tone, b2); Backing.ytVolume(Math.min(1, b2));
     };
     $$('#abSeg button').forEach(function (b) { b.addEventListener('click', function () {
       $$('#abSeg button').forEach(function (x) { x.setAttribute('aria-pressed', String(x === b)); });
