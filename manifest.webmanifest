@@ -1,0 +1,13 @@
+{
+  "name": "톤잇 · 원곡 들으며 기타 톤 맞추기",
+  "short_name": "톤잇",
+  "start_url": "./",
+  "scope": "./",
+  "display": "browser",
+  "background_color": "#3182f6",
+  "theme_color": "#f2f4f6",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
