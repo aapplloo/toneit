@@ -354,6 +354,9 @@ button, summary, .seg, .chain, .dock, .btn, .tonetag, .th, .lmain, .mini { -webk
 .mixbox.off .seg, .mixbox.off .sliders { opacity: .4; filter: grayscale(1); pointer-events: none; }
 .mixoff { margin: 0 0 8px; }
 .mixbox:not(.off) .mixoff { display: none; }
+/* logo matches the app icon: 톤 blue, 잇 dark, green dot */
+.brand { position: relative; padding-right: 10px; }
+.brand::after { content: ''; position: absolute; right: 0; top: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
 
 </style>
 </head>

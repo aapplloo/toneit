@@ -1,20 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#5aa3ff"/>
-      <stop offset="1" stop-color="#1b5fd9"/>
-    </linearGradient>
-    <radialGradient id="glow" cx="0.25" cy="0.15" r="0.85">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.25"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
-    </radialGradient>
-    <filter id="sh" x="-10%" y="-10%" width="120%" height="130%">
-      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#0a2a66" flood-opacity="0.30"/>
-    </filter>
-  </defs>
-  <rect width="1024" height="1024" fill="url(#bg)"/>
-  <rect width="1024" height="1024" fill="url(#glow)"/>
-  <text x="500" y="548" text-anchor="middle" dominant-baseline="middle" filter="url(#sh)"
-        font-family="Noto Sans CJK KR, Pretendard, Apple SD Gothic Neo, sans-serif" font-weight="900" font-size="390" letter-spacing="-22" fill="#ffffff">톤잇</text>
-  <circle cx="842" cy="292" r="58" fill="#00d17a" filter="url(#sh)"/>
+  <rect width="1024" height="1024" fill="#ffffff"/>
+  <text x="500" y="548" text-anchor="middle" dominant-baseline="middle"
+        font-family="Noto Sans CJK KR, sans-serif" font-weight="900" font-size="390" letter-spacing="-22"><tspan fill="#3182f6">톤</tspan><tspan fill="#191f28">잇</tspan></text>
+  <circle cx="842" cy="292" r="58" fill="#00c471"/>
 </svg>
