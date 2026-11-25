@@ -329,6 +329,26 @@ button, summary, .seg, .chain, .dock, .btn, .tonetag, .th, .lmain, .mini { -webk
   .input, .select, .f select, .f input, .list-param .select, .tonemap .select, input, select, textarea, .modal textarea, textarea.code { font-size: 16px; }
 }
 
+/* score section: bar search beside the label, tone sections, reference legend */
+.secrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.sech { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.barfind { display: flex; gap: 6px; flex: none; }
+.barfind .input { width: 104px; height: 40px; padding: 0 10px; font-size: 14px; border-radius: 12px; }
+.barfind .btn.sm { min-height: 40px; padding: 0 12px; }
+.marks { height: 36px; }
+.mk[class*="t-"]::after { display: none; }
+.mk[class*="t-"] { border-radius: 10px; bottom: 2px; }
+.mk.sel { box-shadow: inset 0 0 0 2px currentColor; }
+.mk.t-clean.sel, .mk.t-crunch.sel, .mk.t-drive.sel, .mk.t-fuzz.sel, .mk.t-lead.sel { filter: saturate(1.4); }
+.tonelegend { margin: 8px 2px 0; font-size: 13px; color: var(--ink-3); line-height: 1.6; }
+.tonelegend b { color: var(--ink-2); font-weight: 700; }
+.tonelegend .tl { display: inline-block; padding: 0 7px; border-radius: 8px; font-weight: 700; font-size: 12px; margin: 0 2px; }
+.sectionbox .autotone { margin-top: 12px; }
+/* mixer only works when an original is playing */
+.mixbox.off .seg, .mixbox.off .sliders { opacity: .4; filter: grayscale(1); pointer-events: none; }
+.mixoff { margin: 0 0 8px; }
+.mixbox:not(.off) .mixoff { display: none; }
+
 </style>
 </head>
 <body>
@@ -374,12 +394,19 @@ button, summary, .seg, .chain, .dock, .btn, .tonetag, .th, .lmain, .mini { -webk
         <label class="f" id="bpmField" hidden><span>템포 (BPM)</span><input id="inBpm" type="number" min="30" max="300" step="1" inputmode="numeric"></label>
       </div>
       <div class="sectionbox">
-        <div class="sh"><span class="lbl">연주 구간</span><span class="val" id="barLbl"></span></div>
-        <div class="marks" id="marks" aria-label="연주가 있는 구간 — 눌러서 선택"></div>
+        <div class="secrow">
+          <div class="sech"><span class="lbl">연주 구간</span><span class="val" id="barLbl"></span></div>
+          <form class="barfind" id="barFind" role="search" autocomplete="off">
+            <input class="input" id="barQ" type="text" placeholder="마디 12-20" aria-label="연주할 마디 찾기 (예: 12-20)" enterkeyhint="go">
+            <button class="btn sm" type="submit">이동</button>
+          </form>
+        </div>
+        <div class="marks" id="marks" hidden aria-label="톤이 바뀌는 구간 — 눌러서 선택"></div>
         <canvas id="barStrip" class="strip" aria-label="연주할 마디 구간 — 양쪽 손잡이를 끌어 조절"></canvas>
-        <div class="tonepick" id="tonePick" hidden>
-          <span class="lbl">이 구간 톤</span>
-          <div class="pills" id="tonePills" role="group" aria-label="이 구간 톤"></div>
+        <p class="tonelegend" id="toneLegend" hidden></p>
+        <div class="autotone">
+          <div class="ctl inline"><span><b>톤 자동변경</b><small>구간을 고르거나 연주가 넘어가면 아래 이펙터 프리셋이 그 구간 톤으로 바뀌어요</small></span><button type="button" class="toggle" id="autoTone" role="switch" aria-checked="false"><span></span></button></div>
+          <div class="tonemap" id="toneMap" hidden></div>
         </div>
       </div>
     </div>
@@ -420,7 +447,8 @@ button, summary, .seg, .chain, .dock, .btn, .tonetag, .th, .lmain, .mini { -webk
         <div class="stepper"><button type="button" data-off="-20" aria-label="20ms 당기기">−</button><span id="offT">0 ms</span><button type="button" data-off="20" aria-label="20ms 미루기">+</button></div>
       </div>
     </div>
-    <div class="mixbox">
+    <div class="mixbox off" id="mixBox" aria-disabled="true">
+      <p class="note mixoff" id="mixOffNote">원곡을 켜면 원곡·내 톤 볼륨을 조절할 수 있어요.</p>
       <div class="seg" id="abSeg" role="group" aria-label="비교 듣기">
         <button type="button" data-ab="orig" aria-pressed="false">원곡만</button>
         <button type="button" data-ab="both" aria-pressed="true">같이</button>
@@ -463,10 +491,6 @@ button, summary, .seg, .chain, .dock, .btn, .tonetag, .th, .lmain, .mini { -webk
     </div>
     <div class="nowtone"><span class="pname" id="pName">Plexi Crunch</span><span class="pmeta" id="lcdMeta"></span></div>
 
-    <div class="autotone">
-      <div class="ctl inline"><span><b>톤 자동변경</b><small>구간 톤(clean 등)이 바뀌면 프리셋도 바뀌어요</small></span><button type="button" class="toggle" id="autoTone" role="switch" aria-checked="false"><span></span></button></div>
-      <div class="tonemap" id="toneMap" hidden></div>
-    </div>
 
     <div class="patchlvl" id="patchLevel"></div>
 
@@ -2260,7 +2284,7 @@ var Tab = (function () {
     return { label: '', start: Math.max(0, i) };
   }
   function isTabLine(line) {
-    if (!line || line.indexOf('--') < 0) return false;
+    if (!line || line.indexOf('-') < 0) return false; // dense lines like -2-2-2- have no double dash
     var sp = splitLabel(line), body = line.slice(sp.start).replace(/\s+$/, '');
     var pre = line.slice(0, sp.start).trim();
     if (pre && !/^[A-Ga-g][#b]?\s*[|:\]]?$/.test(pre) && pre !== '|') return false;
@@ -4766,15 +4790,17 @@ var Backing = (function () {
 /* ===== Controls: horizontal drag sliders, segmented modes, lists =====
    Drag left/right anywhere on the control (relative, so a grab never jumps the value); a tap sets the value
    where you tapped; double-tap resets; arrow keys step. Vertical swipes are left to page scrolling. */
-function fmtParam(v, fmt, step) {
-  if (fmt === 'db') return (v > 0 ? '+' : '') + (Math.abs(v) < 10 ? v.toFixed(1) : Math.round(v)) + ' dB';
-  if (fmt === 'hz') return v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 1 : 2) + ' kHz' : Math.round(v) + ' Hz';
+// whole numbers only: 0–10 knobs read 0–100, dB/Hz/ms are rounded
+function fmtParam(v, fmt, step, min, max) {
+  if (fmt === 'db') { var d = Math.round(v); return (d > 0 ? '+' : '') + d + ' dB'; }
+  if (fmt === 'hz') return Math.round(v) + ' Hz';
   if (fmt === 'ms') return Math.round(v) + ' ms';
   if (fmt === 'pct') return Math.round(v * 100) + '%';
-  return step >= 1 ? String(Math.round(v)) : v.toFixed(1);
+  if (min != null && max != null && max > min && max - min <= 10 && step < 1) return String(Math.round((v - min) / (max - min) * 100));
+  return String(Math.round(v));
 }
 function HSlider(o) {
-  var min = o.min, max = o.max, v = clamp(o.value, min, max), step = o.step || ((max - min) > 50 ? 1 : 0.1);
+  var min = o.min, max = o.max, v = clamp(o.value, min, max), step = o.step || (o.fmt === 'db' ? 1 : (max - min) > 50 ? 1 : 0.1);
   var log = o.fmt === 'hz' && min > 0;
   var root = el('div', { class: 'hs', tabindex: '0', role: 'slider', 'aria-label': o.label, style: o.color ? '--c:' + o.color : '' });
   root.innerHTML = '<div class="hs-top"><span class="hs-l"></span><span class="hs-v"></span></div><div class="hs-track"><div class="hs-fill"></div><div class="hs-thumb"></div></div>';
@@ -4787,7 +4813,7 @@ function HSlider(o) {
     var u = toU(v), z = (min < 0 && max > 0) ? toU(0) : 0;
     fill.style.left = (Math.min(u, z) * 100) + '%'; fill.style.width = (Math.abs(u - z) * 100) + '%';
     thumb.style.left = (u * 100) + '%';
-    vEl.textContent = o.format ? o.format(v) : fmtParam(v, o.fmt, step);
+    vEl.textContent = o.format ? o.format(v) : fmtParam(v, o.fmt, step, min, max);
     root.setAttribute('aria-valuenow', String(+v.toFixed(3))); root.setAttribute('aria-valuetext', vEl.textContent);
   }
   function setV(x, fire) { var nv = q(x); if (nv === v) return; v = nv; draw(); if (fire && o.onChange) o.onChange(v); }
@@ -5160,7 +5186,7 @@ var UnitUI = (function () {
     var box = $('#toneMap'); box.hidden = !auto.on; box.innerHTML = '';
     $('#autoTone').setAttribute('aria-checked', String(auto.on));
     if (!auto.on) return;
-    if (!songTones.length) { box.appendChild(el('div', { class: 'empty2', text: '악보에 톤 표시(clean 등)가 없어요. 위쪽 연주 구간을 눌러 "이 구간 톤"을 정해 주세요.' })); return; }
+    if (!songTones.length) { box.appendChild(el('div', { class: 'empty2', text: '이 악보에는 clean·drive 같은 톤 표시가 없어서 자동으로 바꿀 구간이 없어요.' })); return; }
     songTones.forEach(function (t) {
       var row = el('div', { class: 'tm' + (t === active ? ' active' : '') });
       row.appendChild(el('span', { class: 'tonetag t-' + t, text: t }));
@@ -5200,7 +5226,7 @@ var UnitUI = (function () {
     $('#btnImport').addEventListener('click', function () { closeMenu(); if (window.ToneShare) ToneShare.openPaste(); else importPatch(); });
     $('#btnResetOrder').addEventListener('click', function () { closeMenu(); setOrder(MODELS.BLOCKS.map(function (b) { return b.id; })); renderChain(); renderDetail(); toast('이펙터 순서를 기본으로 돌렸어요'); });
     document.addEventListener('click', function (e) { var m = $('#presetMenu'); if (m.open && !m.contains(e.target)) m.open = false; });
-    levelS = HSlider({ label: '프리셋 볼륨', min: -18, max: 12, value: 0, def: 0, step: 0.5, fmt: 'db', onChange: function (v) { patch.level = v; Engine.setPatchLevel(v); markDirty(); } });
+    levelS = HSlider({ label: '프리셋 볼륨', min: -18, max: 12, value: 0, def: 0, step: 1, fmt: 'db', onChange: function (v) { patch.level = v; Engine.setPatchLevel(v); markDirty(); } });
     $('#patchLevel').appendChild(levelS.el);
     $('#bSwitch').addEventListener('click', function () { toggle(sel); });
     $('#mInfo').addEventListener('click', function () { helpOpen = !helpOpen; renderHelp(); });
@@ -6384,7 +6410,7 @@ var IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform =
 var App = (function () {
   'use strict';
   var current = { kind: null, text: '', score: null, pdf: null, track: 0, baseTuning: null };
-  var barStrip, bkStrip, regions = [], toneOverride = {}, selRegion = -1, lastTone = null;
+  var barStrip, bkStrip, regions = [], barTone = [], selRegion = -1, lastTone = null;
 
   /* ---------- song loading ---------- */
   function setSong(song) {
@@ -6400,7 +6426,7 @@ var App = (function () {
     Object.keys(Tab.TUNINGS).forEach(function (k) { st.appendChild(el('option', { value: k, text: Tab.TUNINGS[k].name })); });
     if (!tk) { st.appendChild(el('option', { value: 'custom', text: '악보 튜닝: ' + song.tuning.slice().reverse().map(noteName).join(' ') })); tk = 'custom'; }
     st.value = tk;
-    toneOverride = {}; selRegion = -1; lastTone = null;
+    selRegion = -1; lastTone = null;
     buildRegions();
     var n = song.bars.length, first = regions[0];
     var a = first ? first.a : 0, b = first ? first.b : Math.min(n - 1, 7);
@@ -6579,74 +6605,87 @@ var App = (function () {
     else { song.notes.forEach(function (n) { n.midi += t[n.s - 1] - song.tuning[n.s - 1]; }); song.tuning = t.slice(); Seq.invalidate(); }
   }
 
-  /* ---------- playing regions ("bookmarks") and section tones ---------- */
+  /* ---------- tone sections ----------
+     The song is split only where the tone written in the score changes (clean → drive …).
+     One tone from start to end = one section, no bookmarks. Any other span is picked by dragging the
+     strip or typing bars into the search box. */
   function barOf(song, t) { var lo = 0, hi = song.bars.length - 1; while (lo < hi) { var m = (lo + hi + 1) >> 1; if (song.bars[m].t <= t + 1e-6) lo = m; else hi = m - 1; } return lo; }
   function buildRegions() {
-    var song = Seq.song(); regions = []; if (!song) return;
+    var song = Seq.song(); regions = []; barTone = []; if (!song) return;
     var n = song.bars.length, has = new Array(n).fill(false);
     song.notes.forEach(function (x) { has[barOf(song, x.t)] = true; });
-    var marks = song.marks || [], cut = {}, secName = {}, toneAt = {};
-    marks.forEach(function (m) { cut[m.bar] = true; if (m.section) secName[m.bar] = m.section; if (m.tone) toneAt[m.bar] = m.tone; });
-    var runs = [], cur = null;
-    for (var i = 0; i < n; i++) {
-      if (!has[i]) { if (cur) { runs.push(cur); cur = null; } continue; }
-      if (cur && cut[i]) { runs.push(cur); cur = null; }
-      if (!cur) cur = { a: i, b: i }; else cur.b = i;
+    var first = has.indexOf(true), last = has.lastIndexOf(true);
+    if (first < 0) { first = 0; last = n - 1; }
+    var toneAt = {};
+    (song.marks || []).forEach(function (m) { if (m.tone) toneAt[m.bar] = m.tone; });
+    var keys = Object.keys(toneAt).map(Number).sort(function (x, y) { return x - y; });
+    // each bar takes the latest tone written at or before it; bars before the first one take the first
+    var cur = keys.length ? toneAt[keys[0]] : null, ki = 0;
+    for (var i = 0; i < n; i++) { while (ki < keys.length && keys[ki] <= i) { cur = toneAt[keys[ki]]; ki++; } barTone.push(cur); }
+    var r = null;
+    for (i = first; i <= last; i++) {
+      if (!r || barTone[i] !== r.tone) { if (r) regions.push(r); r = { a: i, b: i, tone: barTone[i] }; } else r.b = i;
     }
-    if (cur) runs.push(cur);
-    // long stretches with no markers: split into 8-bar phrases so each bookmark stays a usable practice loop
-    runs.forEach(function (r) { if (r.b - r.a + 1 > 12) { for (var s = r.a; s <= r.b; s += 8) regions.push({ a: s, b: Math.min(r.b, s + 7) }); } else regions.push(r); });
-    var tone = null, bars = Object.keys(toneAt).map(Number).sort(function (x, y) { return x - y; });
-    regions.forEach(function (r, k) {
-      bars.forEach(function (j) { if (j <= r.a) tone = toneAt[j]; });
-      var inside = bars.filter(function (j) { return j > r.a && j <= r.b; })[0];
-      r.scoreTone = tone || (inside != null ? toneAt[inside] : null);
-      r.name = secName[r.a] || String(k + 1);
-    });
+    if (r) regions.push(r);
+    regions.forEach(function (q) { while (q.a < q.b && !has[q.a]) q.a++; while (q.b > q.a && !has[q.b]) q.b--; q.name = q.tone || '전체'; });
   }
-  function regionTone(r) { var o = toneOverride[r.a]; return o === undefined ? (r.scoreTone || null) : o; }
-  function songTones() { var s = []; regions.forEach(function (r) { var t = regionTone(r); if (t && s.indexOf(t) < 0) s.push(t); }); return s; }
+  function songTones() { var s = []; regions.forEach(function (r) { if (r.tone && s.indexOf(r.tone) < 0) s.push(r.tone); }); return s; }
   function renderMarks() {
-    var box = $('#marks'), song = Seq.song(); box.innerHTML = '';
-    if (!song) return;
-    var n = song.bars.length;
-    regions.forEach(function (r, k) {
-      var left = r.a / n * 100, width = (r.b - r.a + 1) / n * 100, tone = regionTone(r);
-      var b = el('button', { type: 'button', class: 'mk' + (k === selRegion ? ' sel' : ''), style: 'left:' + left + '%;width:calc(' + width + '% - 2px)', title: '마디 ' + (r.a + 1) + '–' + (r.b + 1) + (tone ? ' · ' + tone : ''), 'aria-label': r.name + ' 구간, 마디 ' + (r.a + 1) + '부터 ' + (r.b + 1) + (tone ? ', ' + tone + ' 톤' : '') });
+    var box = $('#marks'), leg = $('#toneLegend'), song = Seq.song(); box.innerHTML = ''; leg.innerHTML = '';
+    if (!song) { box.hidden = true; leg.hidden = true; return; }
+    var n = song.bars.length, multi = regions.length > 1;
+    box.hidden = !multi;
+    if (multi) regions.forEach(function (r, k) {
+      var left = r.a / n * 100, width = (r.b - r.a + 1) / n * 100;
+      var b = el('button', { type: 'button', class: 'mk' + (r.tone ? ' t-' + r.tone : '') + (k === selRegion ? ' sel' : ''), style: 'left:' + left + '%;width:calc(' + width + '% - 2px)', title: '마디 ' + (r.a + 1) + '–' + (r.b + 1) + (r.tone ? ' · ' + r.tone : ''), 'aria-label': (r.tone || '톤 표시 없음') + ' 구간, 마디 ' + (r.a + 1) + '부터 ' + (r.b + 1) + '까지' });
       b.textContent = r.name;
       b.addEventListener('click', function () { selectRegion(k); });
       box.appendChild(b);
-      if (tone) box.appendChild(el('span', { class: 'tonetag t-' + tone, style: 'left:' + left + '%;max-width:calc(' + Math.max(width, 6) + '% + 30px)', text: tone }));
     });
+    // for reference only: which tone each part of the score uses
+    var toned = regions.filter(function (r) { return r.tone; });
+    leg.hidden = !toned.length;
+    if (toned.length) {
+      leg.appendChild(el('b', { text: '악보 톤 ' }));
+      if (!multi) { leg.appendChild(document.createTextNode('처음부터 끝까지 ')); leg.appendChild(el('span', { class: 'tl t-' + toned[0].tone, text: toned[0].tone })); }
+      else regions.forEach(function (r, k) {
+        if (k) leg.appendChild(document.createTextNode(' → '));
+        leg.appendChild(document.createTextNode((r.a + 1) + '–' + (r.b + 1) + ' '));
+        leg.appendChild(el('span', { class: 'tl' + (r.tone ? ' t-' + r.tone : ''), text: r.tone || '-' }));
+      });
+    }
     UnitUI.setSongTones(songTones());
-    renderTonePick();
   }
-  function renderTonePick() {
-    var box = $('#tonePick'), pills = $('#tonePills');
-    if (selRegion < 0 || !regions[selRegion]) { box.hidden = true; return; }
-    box.hidden = false; pills.innerHTML = '';
-    var r = regions[selRegion], cur = regionTone(r);
-    [['', '없음'], ['clean', 'clean'], ['crunch', 'crunch'], ['drive', 'drive'], ['fuzz', 'fuzz'], ['lead', 'lead']].forEach(function (o) {
-      var b = el('button', { type: 'button', 'aria-pressed': String((cur || '') === o[0]), text: o[1] });
-      b.addEventListener('click', function () { toneOverride[r.a] = o[0] || null; renderMarks(); if (o[0] && UnitUI.autoOn()) UnitUI.switchTone(o[0]); });
-      pills.appendChild(b);
-    });
+  function toneForRange(a) { return barTone[a] || null; }
+  function followTone(a) { // with 톤 자동변경 on, picking a span sets the effects to that span's tone
+    if (!UnitUI.autoOn()) return;
+    var t = toneForRange(a); if (!t) return;
+    lastTone = t;
+    if (UnitUI.switchTone(t)) toast(t + ' 구간 → ' + UnitUI.patch().name, 1600);
   }
-  function selectRegion(k) {
-    var r = regions[k]; if (!r) return;
-    selRegion = k;
+  function selectRange(a, b) {
     var was = Seq.isPlaying(); if (was) Seq.stop();
-    barStrip.set(r.a, r.b); Seq.setRange(r.a, r.b); updateBarLbl(); renderMarks();
-    var t = regionTone(r); if (t && UnitUI.autoOn()) UnitUI.switchTone(t);
-    if (was) { lastTone = null; Seq.play(); }
+    barStrip.set(a, b); Seq.setRange(a, b); updateBarLbl(); syncRegionSel(a, b); followTone(a);
+    if (was) Seq.play();
   }
+  function selectRegion(k) { var r = regions[k]; if (!r) return; selRegion = k; selectRange(r.a, r.b); }
   function syncRegionSel(a, b) { selRegion = -1; regions.forEach(function (r, k) { if (r.a === a && r.b === b) selRegion = k; }); renderMarks(); }
-  function toneAtBar(bi) { var t = null; regions.forEach(function (r) { if (bi >= r.a && bi <= r.b) t = regionTone(r); }); return t; }
+  function toneAtBar(bi) { return barTone[bi] || null; }
   function currentTone() {
     var song = Seq.song(); if (!song) return null;
     var pos = Seq.isPlaying() ? Seq.position() : null;
     var st = pos != null ? Seq.songTime(Math.max(0, pos)) : song.bars[Seq.range()[0]].t;
     return toneAtBar(barOf(song, st));
+  }
+  function findBars(q) {
+    var song = Seq.song(); if (!song) { toast('먼저 악보를 올려 주세요'); return; }
+    var nums = (String(q).match(/\d+/g) || []).map(Number), n = song.bars.length;
+    if (!nums.length) { toast('마디 번호를 적어 주세요. 예: 12-20'); return; }
+    var a = nums[0], b = nums.length > 1 ? nums[1] : nums[0] + 3; // one number = 4 bars from there
+    if (b < a) { var t = a; a = b; b = t; }
+    a = clamp(a, 1, n); b = clamp(b, 1, n);
+    selectRange(a - 1, b - 1);
+    toast('마디 ' + a + '–' + b + (nums.length > 1 ? '' : ' (4마디)'), 1400);
   }
   function updateBarLbl() {
     var r = Seq.range(), song = Seq.song(); if (!song) return;
@@ -6759,12 +6798,13 @@ var App = (function () {
         }
       },
       onInput: function (a, b) { Seq.setRange(a, b); updateBarLbl(); },
-      onChange: function (a, b) { var was = Seq.isPlaying(); if (was) Seq.stop(); Seq.setRange(a, b); updateBarLbl(); syncRegionSel(a, b); if (was) Seq.play(); }
+      onChange: function (a, b) { var was = Seq.isPlaying(); if (was) Seq.stop(); Seq.setRange(a, b); updateBarLbl(); syncRegionSel(a, b); followTone(a); if (was) Seq.play(); }
     });
     bkStrip = RangeStrip($('#bkStrip'), { min: 0, max: 30, a: 0, b: 30, step: 0.05, minSpan: 0.5, bg: bkBg,
       onInput: function (a, b) { $('#aT').textContent = fmtTime(a); $('#bT').textContent = fmtTime(b); },
       onChange: function (a, b) { var was = Seq.isPlaying(); if (was) Seq.stop(); Backing.setRegion(a, b); refreshRegion(); if (was) Seq.play(); } });
 
+    $('#barFind').addEventListener('submit', function (e) { e.preventDefault(); findBars($('#barQ').value); $('#barQ').blur(); });
     // score
     $('#btnOpenScore').addEventListener('click', function () { $('#fileScore').click(); });
     var isImg = function (f) { return /^image\//.test(f.type) || /\.(jpe?g|png|webp|heic|heif|gif)$/i.test(f.name); };
@@ -6849,7 +6889,7 @@ var App = (function () {
     dz.addEventListener('drop', function (e) { e.preventDefault(); dz.classList.remove('over'); var f = e.dataTransfer.files[0]; if (f) loadAudio(f); });
     Backing.on(function (what) {
       if (what === 'file' || what === 'yt' || what === 'region' || what === 'offset') refreshRegion();
-      if (what === 'yt') mix(); // a new YouTube player starts at its own volume
+      if (typeof mix === 'function') mix(); // a new YouTube player starts at its own volume; mixer on/off follows the original
       if (String(what).indexOf('yterror') === 0) toast('이 영상은 외부 재생이 막혀 있어요. 다른 영상을 골라 주세요.');
     });
     $('#setA').addEventListener('click', function () { var t = Backing.currentTime(); if (t == null) { toast('원곡이 재생 중일 때 눌러 주세요'); return; } var r = Backing.region(); Backing.setRegion(t, Math.max(t + 0.5, r.b)); });
@@ -6860,8 +6900,12 @@ var App = (function () {
     // 내 톤: up to 300% so it can sit on top of a loud original (the master limiter keeps it from clipping)
     var mixTone = HSlider({ label: '내 톤 볼륨', min: 0, max: 3, value: 0.9, def: 0.9, step: 0.01, fmt: 'pct', onChange: function () { mix(); } });
     $('#mixSliders').appendChild(mixBack.el); $('#mixSliders').appendChild(mixTone.el);
+    var backingOn = function () { var m = Backing.mode(); return m === 'yt' ? !!Backing.yt.player : m === 'file' ? Backing.hasFile() : false; };
     var mix = function () {
-      var ab = $('#abSeg').dataset.v || 'both', back = mixBack.get(), tone = mixTone.get();
+      var on = backingOn(), ab = $('#abSeg').dataset.v || 'both', back = mixBack.get(), tone = mixTone.get();
+      var box = $('#mixBox'); box.classList.toggle('off', !on); box.setAttribute('aria-disabled', String(!on));
+      $$('#abSeg button').forEach(function (x) { x.disabled = !on; });
+      if (!on) { ab = 'both'; back = 0; } // nothing to compare with: always hear my tone
       if (ab === 'orig') tone = 0; if (ab === 'mine') back = 0;
       var b2 = back * back;
       Engine.setMix(tone, b2); Backing.ytVolume(Math.min(1, b2));
@@ -6870,7 +6914,7 @@ var App = (function () {
       $$('#abSeg button').forEach(function (x) { x.setAttribute('aria-pressed', String(x === b)); });
       $('#abSeg').dataset.v = b.dataset.ab; mix();
     }); });
-    Engine.onInit(mix);
+    Engine.onInit(mix); mix();
     requestAnimationFrame(frame);
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
