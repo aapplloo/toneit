@@ -7,4 +7,4 @@
 - 만든 톤은 코드나 링크로 친구와 주고받고, 보관함에서 0~5점(0.5점 단위)으로 평가해요.
 - 악보는 공유하지 않아요. 톤 설정만 주고받아요.
 
-사이트: https://aapplloo.github.io/tonelab/
+사이트: https://aapplloo.github.io/toneit/
