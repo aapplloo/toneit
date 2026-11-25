@@ -321,6 +321,13 @@ textarea.code { width: 100%; border: 0; border-radius: 14px; background: var(--f
 .tagpick .tonetag { pointer-events: auto; height: 32px; line-height: 32px; padding: 0 14px; border-radius: 16px; }
 .tline .tonetag { height: 22px; line-height: 22px; padding: 0 9px; border-radius: 11px; }
 .mixnote { margin-top: 10px; line-height: 1.5; background: #fff7ed; color: #9a4a12; border-radius: 12px; padding: 10px 12px; }
+/* no zoom on double tap (pinch zoom still works), no word selection when tapping controls quickly */
+html, body, button, a, summary, label, select, input, textarea, .seg, .chain, .dock, .card { touch-action: manipulation; }
+button, summary, .seg, .chain, .dock, .btn, .tonetag, .th, .lmain, .mini { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+/* iPhone zooms into any text box smaller than 16px when it is tapped */
+@media (pointer: coarse) {
+  .input, .select, .f select, .f input, .list-param .select, .tonemap .select, input, select, textarea, .modal textarea, textarea.code { font-size: 16px; }
+}
 
 </style>
 </head>
