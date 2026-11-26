@@ -417,6 +417,10 @@ button, summary, .seg, .chain, .dock, .btn, .tonetag, .th, .lmain, .mini { -webk
           <option value="legato">다음 음까지 이어서</option>
           <option value="ring">줄 울림 유지 (레트링)</option>
         </select></label>
+        <label class="f"><span>연주 느낌</span><select id="selFeel">
+          <option value="human">사람처럼</option>
+          <option value="exact">박자 그대로 (기계처럼)</option>
+        </select></label>
         <label class="f" id="bpmField" hidden><span>템포 (BPM)</span><input id="inBpm" type="number" min="30" max="300" step="1" inputmode="numeric"></label>
       </div>
       <div class="sectionbox">
@@ -1428,7 +1432,23 @@ function SynthCore() {
     return out;
   }
 
+  /* finger squeak: the fretting finger sliding along a wound string between positions. Friction over the
+     windings makes a hiss whose pitch follows the hand's speed (rises, then falls as the hand stops). */
+  function renderSqueak(v, cfg, fs) {
+    var dur = Math.min(0.2, Math.max(0.05, v.dur)), N = Math.ceil(dur * fs), out = new Float32Array(N), rnd = rng((v.seed || 5) * 131);
+    var z1 = 0, z2 = 0, lp = 0, lvl = (v.vel || 0.5) * 0.12 * (cfg.outGain || 1), fPeak = 2600 + 1600 * rnd();
+    for (var n = 0; n < N; n++) {
+      var u = n / N, sh = Math.sin(Math.PI * u), fc = 700 + fPeak * sh, w0 = 2 * Math.PI * fc / fs, Q = 5;
+      var al = Math.sin(w0) / (2 * Q), a0 = 1 + al, nb0 = al / a0, na1 = -2 * Math.cos(w0) / a0, na2 = (1 - al) / a0;
+      var x = rnd() * 2 - 1, y = nb0 * x + z1;                // band-pass (transposed direct form II), coefficients follow the sweep
+      z1 = -na1 * y + z2; z2 = -nb0 * x - na2 * y;
+      lp = 0.92 * lp + 0.08 * x;                               // a little low rustle under it
+      out[n] = (y * 0.9 + lp * 0.6) * Math.pow(sh, 1.5) * lvl;
+    }
+    return out;
+  }
   function renderVoice(v, cfg, fs) {
+    if (v.squeak) return renderSqueak(v, cfg, fs);
     if (v.scrape) return renderScrape(v, cfg, fs);
     var dur = Math.min(v.dur, 9);
     var rel = v.dead ? 0.012 : 0.035;
@@ -1459,7 +1479,7 @@ function SynthCore() {
     var curF = 82;
 
     function startBurst(e, P) {
-      var amp = e[1], bright = e[2], pluckIn = e[3] === -2 ? cfg.palmPos : (e[3] < 0 || e[3] == null ? cfg.pluckPos : e[3]);
+      var amp = e[1], bright = e[2], pluckIn = (e[3] === -2 ? cfg.palmPos : (e[3] < 0 || e[3] == null ? cfg.pluckPos : e[3])) * (e[4] || 1);
       var L = Math.max(8, Math.round(P));
       var data = new Float32Array(L), i, cA = 1 - Math.min(0.95, Math.max(0.05, bright)), y = 0, mean = 0;
       for (i = 0; i < L; i++) { y = y * cA + (rnd() * 2 - 1) * (1 - cA); data[i] = y; mean += y; }
@@ -3290,8 +3310,8 @@ var PhotoTab = (function () {
     if (window.createImageBitmap) return createImageBitmap(src, { imageOrientation: 'from-image' }).catch(function () { return createImageBitmap(src); });
     return new Promise(function (res, rej) { var im = new Image(); im.onload = function () { res(im); }; im.onerror = rej; im.src = URL.createObjectURL(src); });
   }
-  function canvasOf(img, maxW, deg) {
-    var W = img.width, H = img.height, sc = Math.min(1, maxW / Math.max(W, 1));
+  function canvasOf(img, maxW, deg, up) {
+    var W = img.width, H = img.height, sc = up ? Math.min(2.5, maxW / Math.max(W, 1)) : Math.min(1, maxW / Math.max(W, 1));
     var w = Math.round(W * sc), h = Math.round(H * sc), c = document.createElement('canvas');
     c.width = w; c.height = h;
     var g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, w, h);
@@ -3320,10 +3340,145 @@ var PhotoTab = (function () {
     }
     return { w: w, h: h, b: B };
   }
-  // skew: the angle that makes the dark pixels' row histogram peakiest (staff lines line up)
+  /* ---------- page finding: a photo of a sheet lying on a table ----------
+     The paper is the largest bright region. Its four sides are fitted as straight lines and the sheet is
+     warped flat (perspective + rotation removed), so staff lines become horizontal again. */
+  function otsu(g, means) {
+    var h = new Float64Array(256), n = g.length, i; for (i = 0; i < n; i++) h[g[i]]++;
+    var sum = 0; for (i = 0; i < 256; i++) sum += i * h[i];
+    var wB = 0, sB = 0, best = 0, th = 128, m0 = 0, m1 = 255;
+    for (i = 0; i < 256; i++) { wB += h[i]; if (!wB) continue; var wF = n - wB; if (!wF) break; sB += i * h[i]; var mB = sB / wB, mF = (sum - sB) / wF, v = wB * wF * (mB - mF) * (mB - mF); if (v > best) { best = v; th = i; m0 = mB; m1 = mF; } }
+    return means ? [th, m0, m1] : th;
+  }
+  function findPage(G, dbg) {
+    dbg = dbg || {};
+    // threshold nearer the dark side than Otsu's: a sheet in partial shadow is still brighter than the table
+    var w = G.w, h = G.h, g = G.g, n = w * h, o = otsu(g, true), th = Math.round(o[1] + (o[2] - o[1]) * 0.4), i, x, y;
+    var lab = new Int32Array(n), q = new Int32Array(n), best = -1, bestN = 0, id = 0;
+    for (i = 0; i < n; i++) {
+      if (lab[i] || g[i] <= th) continue;
+      id++; var qh = 0, qt = 0, cnt = 0; q[qt++] = i; lab[i] = id;
+      while (qh < qt) { var p = q[qh++]; cnt++; x = p % w; y = (p / w) | 0;
+        if (x > 0 && !lab[p - 1] && g[p - 1] > th) { lab[p - 1] = id; q[qt++] = p - 1; }
+        if (x < w - 1 && !lab[p + 1] && g[p + 1] > th) { lab[p + 1] = id; q[qt++] = p + 1; }
+        if (y > 0 && !lab[p - w] && g[p - w] > th) { lab[p - w] = id; q[qt++] = p - w; }
+        if (y < h - 1 && !lab[p + w] && g[p + w] > th) { lab[p + w] = id; q[qt++] = p + w; } }
+      if (cnt > bestN) { bestN = cnt; best = id; }
+    }
+    if (bestN < n * 0.25) return null;
+    // boundary of the sheet; a sheet cut off by the photo edge (zoomed in, screenshot) is left alone
+    var bx = [], by = [], edge = 0;
+    for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
+      if (lab[y * w + x] !== best) continue;
+      var onEdge = x === 0 || y === 0 || x === w - 1 || y === h - 1;
+      if (onEdge) { edge++; continue; }
+      if (lab[y * w + x - 1] !== best || lab[y * w + x + 1] !== best || lab[(y - 1) * w + x] !== best || lab[(y + 1) * w + x] !== best) { bx.push(x); by.push(y); }
+    }
+    dbg.edge = edge; dbg.th = th;
+    if (edge > (w + h) * 2 * 0.06) { dbg.why = 'edge'; return null; }
+    var c = [[0, 1e9], [0, -1e9], [0, -1e9], [0, -1e9]]; // TL: min x+y, TR: max x-y, BR: max x+y, BL: max y-x
+    for (i = 0; i < bx.length; i++) {
+      var s1 = bx[i] + by[i], s2 = bx[i] - by[i];
+      if (s1 < c[0][1]) c[0] = [i, s1]; if (s2 > c[1][1]) c[1] = [i, s2]; if (s1 > c[2][1]) c[2] = [i, s1]; if (-s2 > c[3][1]) c[3] = [i, -s2];
+    }
+    var P = c.map(function (e) { return [bx[e[0]], by[e[0]]]; });
+    var cxm = (P[0][0] + P[1][0] + P[2][0] + P[3][0]) / 4, cym = (P[0][1] + P[1][1] + P[2][1] + P[3][1]) / 4;
+    // each side: look across it for the sharp paper→table step (a shadow is a soft ramp, a printed line is thin),
+    // then fit a straight line through those points, dropping strays
+    function at(px, py) { var ix = Math.round(px), iy = Math.round(py); return ix >= 0 && iy >= 0 && ix < w && iy < h ? g[iy * w + ix] : -1; }
+    var lines = [], D = Math.round(Math.min(w, h) * 0.15);
+    for (var sd = 0; sd < 4; sd++) {
+      var A = P[sd], B = P[(sd + 1) % 4], dx = B[0] - A[0], dy = B[1] - A[1], L = Math.hypot(dx, dy);
+      if (L < Math.min(w, h) * 0.2) return null;
+      var nx = dy / L, ny = -dx / L; // normal; make it point away from the sheet's centre
+      if ((A[0] + B[0]) / 2 * nx + (A[1] + B[1]) / 2 * ny < cxm * nx + cym * ny) { nx = -nx; ny = -ny; }
+      var pts = [];
+      for (var k = 0; k < 40; k++) {
+        var u = 0.08 + 0.84 * k / 39, bxp = A[0] + u * dx, byp = A[1] + u * dy, best = 0, bd = null;
+        for (var d = -D; d <= D; d++) {
+          var qx = bxp + nx * d, qy = byp + ny * d, sin = 0, sout = 0, ok = true;
+          for (var j = 2; j <= 7 && ok; j++) { var vi = at(qx - nx * j, qy - ny * j), vo = at(qx + nx * j, qy + ny * j); if (vi < 0 || vo < 0) ok = false; sin += vi; sout += vo; }
+          if (!ok) continue;
+          var sc = (sin - sout) / 6;
+          if (sc > best) { best = sc; bd = [qx, qy]; }
+        }
+        if (bd && best > 25) pts.push(bd);
+      }
+      dbg['side' + sd] = pts.length;
+      if (pts.length < 22) { dbg.why = 'side' + sd; return null; } // the side must be a clear straight edge
+      // RANSAC: the line through two edge points that most other points agree with, then least squares on those
+      var tolR = Math.max(3, Math.min(w, h) * 0.008), bestIn = null;
+      for (var i1 = 0; i1 < pts.length; i1++) for (var i2 = i1 + 1; i2 < pts.length; i2++) {
+        var ex = pts[i2][0] - pts[i1][0], ey = pts[i2][1] - pts[i1][1], el = Math.hypot(ex, ey); if (el < L * 0.3) continue;
+        var inl = pts.filter(function (q) { return Math.abs((q[0] - pts[i1][0]) * ey - (q[1] - pts[i1][1]) * ex) / el <= tolR; });
+        if (!bestIn || inl.length > bestIn.length) bestIn = inl;
+      }
+      dbg['fit' + sd] = bestIn ? bestIn.length : 0;
+      if (!bestIn || bestIn.length < 18) { dbg.why = 'fit' + sd; return null; }
+      var sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, m = bestIn.length;
+      bestIn.forEach(function (q) { sx += q[0]; sy += q[1]; sxx += q[0] * q[0]; syy += q[1] * q[1]; sxy += q[0] * q[1]; });
+      var mx = sx / m, my = sy / m, cxx = sxx / m - mx * mx, cyy = syy / m - my * my, cxy = sxy / m - mx * my;
+      var ang = 0.5 * Math.atan2(2 * cxy, cxx - cyy), line = [mx, my, Math.cos(ang), Math.sin(ang)];
+      lines.push(line);
+    }
+    var Q = [];
+    for (sd = 0; sd < 4; sd++) {
+      var l1 = lines[(sd + 3) % 4], l2 = lines[sd], det = l1[2] * l2[3] - l1[3] * l2[2];
+      if (Math.abs(det) < 1e-3) { dbg.why = 'det'; return null; }
+      var t = ((l2[0] - l1[0]) * l2[3] - (l2[1] - l1[1]) * l2[2]) / det;
+      Q.push([l1[0] + t * l1[2], l1[1] + t * l1[3]]);
+    }
+    // sanity: convex, corners near the picture, a sizeable sheet
+    dbg.Q = Q;
+    for (sd = 0; sd < 4; sd++) { if (Q[sd][0] < -w * 0.05 || Q[sd][0] > w * 1.05 || Q[sd][1] < -h * 0.05 || Q[sd][1] > h * 1.05) { dbg.why = 'outside'; return null; } }
+    var area = 0; for (sd = 0; sd < 4; sd++) { var q1 = Q[sd], q2 = Q[(sd + 1) % 4]; area += q1[0] * q2[1] - q2[0] * q1[1]; }
+    if (Math.abs(area) / 2 < n * 0.25) { dbg.why = 'area'; return null; }
+    for (sd = 0; sd < 4; sd++) { var a = Q[sd], b = Q[(sd + 1) % 4], cc = Q[(sd + 2) % 4]; if ((b[0] - a[0]) * (cc[1] - b[1]) - (b[1] - a[1]) * (cc[0] - b[0]) <= 0) return null; }
+    return Q;
+  }
+  // homography mapping the unit square (u,v) to quad Q (TL, TR, BR, BL)
+  function quadMap(Q) {
+    var x0 = Q[0][0], y0 = Q[0][1], x1 = Q[1][0], y1 = Q[1][1], x2 = Q[2][0], y2 = Q[2][1], x3 = Q[3][0], y3 = Q[3][1];
+    var dx1 = x1 - x2, dx2 = x3 - x2, dx3 = x0 - x1 + x2 - x3, dy1 = y1 - y2, dy2 = y3 - y2, dy3 = y0 - y1 + y2 - y3;
+    var den = dx1 * dy2 - dx2 * dy1, g = (dx3 * dy2 - dx2 * dy3) / den, hh = (dx1 * dy3 - dx3 * dy1) / den;
+    var a = x1 - x0 + g * x1, b = x3 - x0 + hh * x3, d = y1 - y0 + g * y1, e = y3 - y0 + hh * y3;
+    return function (u, v) { var z = g * u + hh * v + 1; return [(a * u + b * v + x0) / z, (d * u + e * v + y0) / z]; };
+  }
+  function flatten(img, Q, sc) {
+    var src = canvasOf(img, 3200, 0), k = src.width / img.width, S = grayOf(src), sw = S.w, sh = S.h, sg = S.g;
+    var Qs = Q.map(function (p) { return [p[0] / sc * k, p[1] / sc * k]; });
+    var wt = (Math.hypot(Qs[1][0] - Qs[0][0], Qs[1][1] - Qs[0][1]) + Math.hypot(Qs[2][0] - Qs[3][0], Qs[2][1] - Qs[3][1])) / 2;
+    var ht = (Math.hypot(Qs[3][0] - Qs[0][0], Qs[3][1] - Qs[0][1]) + Math.hypot(Qs[2][0] - Qs[1][0], Qs[2][1] - Qs[1][1])) / 2;
+    var W = 2400, H = Math.round(W * ht / wt), map = quadMap(Qs);
+    var c = document.createElement('canvas'); c.width = W; c.height = H;
+    var cx = c.getContext('2d'), im = cx.createImageData(W, H), d = im.data;
+    for (var y = 0; y < H; y++) {
+      var v = (y + 0.5) / H;
+      for (var x = 0; x < W; x++) {
+        var p = map((x + 0.5) / W, v), fx = p[0] - 0.5, fy = p[1] - 0.5, ix = Math.floor(fx), iy = Math.floor(fy), val = 255;
+        if (ix >= 0 && iy >= 0 && ix < sw - 1 && iy < sh - 1) {
+          var ax = fx - ix, ay = fy - iy, o = iy * sw + ix;
+          val = (sg[o] * (1 - ax) + sg[o + 1] * ax) * (1 - ay) + (sg[o + sw] * (1 - ax) + sg[o + sw + 1] * ax) * ay;
+        }
+        var j = (y * W + x) * 4; d[j] = d[j + 1] = d[j + 2] = val; d[j + 3] = 255;
+      }
+    }
+    cx.putImageData(im, 0, 0);
+    return c;
+  }
+  // skew: the angle that makes the row histogram of long horizontal strokes peakiest (staff lines line up);
+  // only pixels in long dark runs count, so text, noise and a dark table don't pull the estimate
   function skewAngle(B) {
-    var w = B.w, h = B.h, pts = [];
-    for (var y = 0; y < h; y++) for (var x = 0; x < w; x += 2) if (B.b[y * w + x]) pts.push(x - w / 2, y);
+    var w = B.w, h = B.h, pts = [], minRun = Math.max(8, Math.round(w / 60));
+    for (var y = 0; y < h; y++) {
+      var run = 0;
+      for (var x = 0; x <= w; x++) {
+        if (x < w && B.b[y * w + x]) { run++; continue; }
+        if (run >= minRun && run < w * 0.9) for (var xr = x - run; xr < x; xr += 2) pts.push(xr - w / 2, y);
+        run = 0;
+      }
+    }
+    if (pts.length < 200) for (y = 0; y < h; y++) for (x = 0; x < w; x += 2) if (B.b[y * w + x]) pts.push(x - w / 2, y);
     var best = 0, bestS = -1;
     function score(a) {
       var t = Math.tan(a * Math.PI / 180), P = new Float64Array(h + w), off = w / 2, s = 0;
@@ -3448,7 +3603,7 @@ var PhotoTab = (function () {
     return new Promise(function (res) { o.toBlob(function (b) { res(b); }, 'image/jpeg', 0.92); });
   }
   // where the six lines really run: walk out from the middle while lines (not a solid dark border) continue
-  function refineExtent(G, s) {
+  function extentStraight(G, s) {
     var W = G.w, H = G.h, g = G.g, TH = 150, sp = s.sp;
     function dk(x, y) { y = Math.round(y); return x >= 0 && x < W && y >= 0 && y < H && g[y * W + x] < TH; }
     function lineAt(x) {
@@ -3462,19 +3617,58 @@ var PhotoTab = (function () {
     for (x = mid, miss = 0; x > 0; x--) { var v = lineAt(x); if (v < 0) break; if (v >= 4) { miss = 0; s.x0 = x; } else if (++miss > maxGap) break; }
     for (x = mid, miss = 0; x < W - 1; x++) { v = lineAt(x); if (v < 0) break; if (v >= 4) { miss = 0; s.x1 = x; } else if (++miss > maxGap) break; }
   }
+  function extentTracked(G, s) {
+    var W = G.w, H = G.h, g = G.g, TH = 150, sp = s.sp;
+    function dk(x, y) { y = Math.round(y); return x >= 0 && x < W && y >= 0 && y < H && g[y * W + x] < TH; }
+    // the staff may drift up or down a little along a photo: follow it
+    var cur = 0;
+    function count(x, d) { var on = 0; for (var i = 0; i < 6; i++) { var y = s.top + i * sp + d; if (dk(x, y) || dk(x, y - 1) || dk(x, y + 1)) on++; } return on; }
+    function countClear(x, d) { var on = 0, hs = sp * 0.5; for (var i = 0; i < 6; i++) { var y = s.top + i * sp + d; if ((dk(x, y) || dk(x, y - 1) || dk(x, y + 1)) && !dk(x, y + hs) && !dk(x, y - hs)) on++; } return on; }
+    function lineAt(x) {
+      var on = count(x, cur), bd = cur;
+      if (on < 5) for (var d = cur - 2; d <= cur + 2; d++) { var c = countClear(x, d); if (c > on) { on = c; bd = d; } } // only move when the lines are lost here, and only onto clean lines
+      var gaps = 0, off = Math.max(3, Math.round(sp * 0.4));
+      for (var i = 0; i < 5; i++) { var yg = s.top + (i + 0.5) * sp + bd; if (dk(x, yg) && dk(x - off, yg) && dk(x + off, yg)) gaps++; }
+      if (gaps >= 4) return -1; // solid dark (page edge, table) — a bar line is thin and doesn't count
+      if (on >= 5) cur = bd;
+      return on;
+    }
+    var mid = Math.round((s.x0 + s.x1) / 2), maxGap = Math.round(sp * 1.2), x, miss, v;
+    // start where the staff really is near the middle
+    var bestC = -1; for (var d0 = -Math.round(sp * 0.35); d0 <= Math.round(sp * 0.35); d0++) { var cc = 0; for (x = mid - 20; x <= mid + 20; x += 2) cc += count(x, d0); if (cc > bestC) { bestC = cc; cur = d0; } }
+    var start = cur;
+    for (x = mid, miss = 0; x > 0; x--) { v = lineAt(x); if (v < 0) break; if (v >= 4) { miss = 0; s.x0 = x; } else if (++miss > maxGap) break; }
+    cur = start;
+    for (x = mid, miss = 0; x < W - 1; x++) { v = lineAt(x); if (v < 0) break; if (v >= 4) { miss = 0; s.x1 = x; } else if (++miss > maxGap) break; }
+  }
+  // the straight walk is exact on flat pages; if it stops far too early (a tilted or curved photo), follow the lines instead
+  function refineExtent(G, s) {
+    var a = { top: s.top, sp: s.sp, x0: s.x0, x1: s.x1 }, b = { top: s.top, sp: s.sp, x0: s.x0, x1: s.x1 };
+    extentStraight(G, a); extentTracked(G, b);
+    var use = (b.x1 - b.x0) > (a.x1 - a.x0) * 1.25 ? b : a;
+    s.x0 = use.x0; s.x1 = use.x1;
+  }
   /* one page → straightened canvas + staves (in canvas pixels) */
   // variant 0: normal; 1: no straightening, gentler threshold; 2: stronger threshold (used when re-reading a failed page)
   function analyse(src, variant) {
     variant = variant || 0;
     var off = [10, 6, 16][variant] || 10;
     return decode(src).then(function (img) {
-      var small = canvasOf(img, 900, 0), deg = variant === 1 ? 0 : skewAngle(binarize(grayOf(small), 12, off));
+      var small = canvasOf(img, 900, 0), page = variant === 1 ? null : findPage(grayOf(canvasOf(img, 600, 0)));
+      if (page) { img = flatten(img, page, 600 / Math.max(600, img.width)); small = canvasOf(img, 900, 0); }
+      var deg = variant === 1 ? 0 : skewAngle(binarize(grayOf(small), 12, off));
       var big = canvasOf(img, 2400, deg);
       var mid = canvasOf(big, 1400, 0), sc = big.width / mid.width, B = binarize(grayOf(mid), 14, off), st = findStaves(B);
+      // small staves (a phone screenshot, a far-away photo): enlarge the page so lines are ~24 px apart — digit
+      // shapes and stem/beam thresholds work best there; pages that are already big enough stay as they are
+      var sps = st.map(function (s) { return s.sp * sc; }).sort(function (a, b) { return a - b; }), spMed = sps.length ? sps[sps.length >> 1] : 0;
+      if (spMed && spMed < 17) {
+        var k = Math.min(2.5, 24 / spMed); big = canvasOf(img, Math.round(big.width * k), deg, true); sc = big.width / mid.width;
+      }
       st = st.map(function (s) { return { top: s.top * sc, bot: s.bot * sc, sp: s.sp * sc, x0: s.x0 * sc, x1: s.x1 * sc, notTop: s.notTop != null ? s.notTop * sc : null }; });
       var gray = enhance(big);
       st.forEach(function (s) { refineExtent(gray, s); });
-      return { canvas: big, gray: gray, staves: st, deg: deg };
+      return { canvas: big, gray: gray, staves: st, deg: deg, page: !!page };
     });
   }
 
@@ -3768,7 +3962,7 @@ var PhotoTab = (function () {
   function toTracks(res) {
     return res.tracks.map(function (tr, i) { return { name: tr.name || ('Guitar ' + (i + 1)), song: toSong(tr, res) }; }).filter(function (x) { return x.song.notes.length; });
   }
-  return { init: init, available: available, createSession: createSession, run: run, failedPages: failedPages, toTracks: toTracks, _toSong: toSong, _analyse: analyse, _blobOf: blobOf, _dbg: { decode: decode, canvasOf: canvasOf, grayOf: grayOf, binarize: binarize, lineRows: lineRows, groupStaves: groupStaves, skewAngle: skewAngle } };
+  return { init: init, available: available, createSession: createSession, run: run, failedPages: failedPages, toTracks: toTracks, _toSong: toSong, _analyse: analyse, _blobOf: blobOf, _dbg: { findPage: findPage, otsu: otsu, decode: decode, canvasOf: canvasOf, grayOf: grayOf, binarize: binarize, lineRows: lineRows, groupStaves: groupStaves, skewAngle: skewAngle } };
 })();
 
 /* generated by tools/gen_tpl.py: 16x16 coverage of tab characters in common print fonts */
@@ -3855,15 +4049,23 @@ var LocalTab = (function () {
     function setThr(pa, pb, qa, qb) {
       if (SOFT !== 2) { gthr = TH; return; }
       var mn = 255; for (var yy = qa; yy <= qb; yy++) for (var xx = pa; xx <= pb; xx++) { var v = g[yy * W + xx]; if (v < mn) mn = v; }
-      gthr = Math.min(TH, mn + (250 - mn) * 0.5);
+      gthr = Math.min(TH, mn + (250 - mn) * (opt.thrK || 0.4));
     }
     var X0 = Math.max(1, Math.floor(st.x0)), X1 = Math.min(W - 2, Math.ceil(st.x1));
     // staff line height in short pieces
     var segW0 = Math.max(24, sp * 8), nseg = Math.max(1, Math.round((X1 - X0) / segW0)), segW = (X1 - X0) / nseg, LY = [];
+    // the six lines move together: find the staff's offset in the middle piece, then follow it piece by piece
+    // to both ends (a photo that is slightly tilted or curved), and finally fit each line within a pixel or two
+    function segScore(k2, d) { var xa = Math.round(X0 + k2 * segW), xb = Math.round(X0 + (k2 + 1) * segW), c = 0; for (var li = 0; li < 6; li++) { var yy = Math.round(st.top + li * sp + d); for (var xx = xa; xx < xb; xx += 2) if (dark(xx, yy)) c++; } return c; }
+    function bestOff(k2, c0, r) { var bd = c0, bc = -1; for (var d = Math.round(c0) - r; d <= Math.round(c0) + r; d++) { var c = segScore(k2, d); if (c > bc || (c === bc && Math.abs(d - c0) < Math.abs(bd - c0))) { bc = c; bd = d; } } return bd; }
+    var offs = new Array(nseg), kmid = nseg >> 1, rr0 = Math.max(2, Math.round(sp * 0.35)), rr1 = Math.max(2, Math.round(sp * 0.22));
+    offs[kmid] = bestOff(kmid, 0, rr0);
+    for (k = kmid + 1; k < nseg; k++) offs[k] = bestOff(k, offs[k - 1], rr1);
+    for (k = kmid - 1; k >= 0; k--) offs[k] = bestOff(k, offs[k + 1], rr1);
     for (i = 0; i < 6; i++) {
       LY.push([]);
       for (k = 0; k < nseg; k++) {
-        var xa = Math.round(X0 + k * segW), xb = Math.round(X0 + (k + 1) * segW), y0 = st.top + i * sp, best = Math.round(y0), bc = -1, r = Math.max(2, Math.round(sp * 0.3));
+        var xa = Math.round(X0 + k * segW), xb = Math.round(X0 + (k + 1) * segW), y0 = st.top + i * sp + offs[k], best = Math.round(y0), bc = -1, r = Math.max(2, Math.round(sp * 0.25));
         for (var dy = -r; dy <= r; dy++) { var yy = Math.round(y0 + dy), c = 0; for (x = xa; x < xb; x++) if (dark(x, yy)) c++; if (c > bc) { bc = c; best = yy; } }
         LY[i].push(best);
       }
@@ -3884,17 +4086,23 @@ var LocalTab = (function () {
     var t = ths.length ? ths[ths.length >> 1] : 2, tt = Math.ceil(t / 2) + (t > 2 ? 1 : 0);
     // bar lines: a continuous dark column from the top line to the bottom line
     var barCol = new Uint8Array(W), XL = Math.max(1, X0 - Math.round(sp)), XR = Math.min(W - 2, X1 + Math.round(sp));
+    // a photo that is not perfectly flat leaves bar lines slightly slanted: try a few slants
+    var SLANTS = [0, -0.012, 0.012, -0.025, 0.025, -0.04, 0.04], barSl = new Float32Array(W);
     for (x = XL; x <= XR; x++) {
-      var ya = lineY(0, x), yb = lineY(5, x), run = 0, bestRun = 0, gap = 0;
-      for (y = ya - 1; y <= yb + 1; y++) { if (dark(x, y)) { run += 1 + gap; gap = 0; if (run > bestRun) bestRun = run; } else if (run && gap < 1) gap++; else { run = 0; gap = 0; } }
-      if (bestRun >= (yb - ya) * 0.94) barCol[x] = 1;
+      var ya = lineY(0, x), yb = lineY(5, x), bestRun = 0;
+      for (var si = 0; si < SLANTS.length && bestRun < (yb - ya) * 0.94; si++) {
+        var sl = SLANTS[si], run = 0, gap = 0;
+        for (y = ya - 1; y <= yb + 1; y++) { var xs = Math.round(x + sl * (y - ya)); if (dark(xs, y)) { run += 1 + gap; gap = 0; if (run > bestRun) bestRun = run; } else if (run && gap < 1) gap++; else { run = 0; gap = 0; } }
+      }
+      if (bestRun >= (yb - ya) * 0.94) { barCol[x] = 1; barSl[x] = SLANTS[si - 1]; }
     }
     var bars = [], side = Math.max(2, Math.round(sp * 0.22));
-    function besideInk(xx) { var c = 0, n = 0; for (var yy = lineY(0, xx); yy <= lineY(5, xx); yy++) { var onLine = false; for (var li = 0; li < 6; li++) if (Math.abs(yy - lineY(li, xx)) <= tt) onLine = true; if (onLine) continue; n++; if (dark(xx, yy)) c++; } return n ? c / n : 0; }
+    function besideInk(xx, sl0) { var c = 0, n = 0, y0b = lineY(0, xx); for (var yy = y0b; yy <= lineY(5, xx); yy++) { var onLine = false; for (var li = 0; li < 6; li++) if (Math.abs(yy - lineY(li, xx)) <= tt) onLine = true; if (onLine) continue; n++; if (dark(Math.round(xx + (sl0 || 0) * (yy - y0b)), yy)) c++; } return n ? c / n : 0; }
     for (x = XL; x <= XR; x++) if (barCol[x]) {
       var a = x; while (x + 1 <= XR && barCol[x + 1]) x++;
       if (x - a + 1 > sp * 0.45) continue;
-      if (besideInk(a - side) > 0.25 && besideInk(x + side) > 0.25) { for (var z = a; z <= x; z++) barCol[z] = 0; continue; } // a column through stacked numbers
+      if (besideInk(a - side, barSl[a]) > 0.25 && besideInk(x + side, barSl[x]) > 0.25) { for (var z = a; z <= x; z++) barCol[z] = 0; continue; } // a column through stacked numbers
+      if (barSl[a] !== 0 && (besideInk(a - side, barSl[a]) > 0.2 || besideInk(x + side, barSl[x]) > 0.2)) { for (z = a; z <= x; z++) barCol[z] = 0; continue; } // a leaning one must stand clear on both sides
       bars.push({ a: a, b: x });
     }
     var merged = [];
@@ -3903,6 +4111,7 @@ var LocalTab = (function () {
     var barX = merged.map(function (b) { return (b.a + b.b) / 2; });
     if (!barX.length || barX[0] > X0 + sp * 2) barX.unshift(X0);
     if (barX[barX.length - 1] < X1 - sp * 2) barX.push(X1);
+    if (opt.dbgBars) opt.dbgBars.push({ X0: X0, X1: X1, segW: segW, LY: LY.map(function (r) { return r.slice(); }), barX: barX.slice(), cand: bars.slice(), t: t });
 
     // look-alike digits (blur closes the gap of a 5, opens an 8 …): decide by the stroke that tells them apart
     function disambig(cl, pa, pb, qa, qb) {
@@ -3975,13 +4184,24 @@ var LocalTab = (function () {
         var a0 = rn[0], b0 = rn[1], lyc = lineY(i, (a0 + b0) >> 1), xx, yy;
         // bigger than a fret number (TAB clef, time signature, rest): remember, don't read as a note
         // taller than a fret number (time signature, rest): ink crossing up into the next line's zone with a thick stroke
+        // stacked chord digits can touch in a blurry photo: the glyph ends at the lightest row between two lines
+        function rowInk(yr) { var c = 0; for (var xr = a0; xr <= b0; xr++) if (dark(xr, yr)) c++; return c; }
+        function lightest(y1, y2) { var br = y1, bc = 1e9; for (var yr = Math.round(y1); yr <= Math.round(y2); yr++) { var c = rowInk(yr); if (c < bc) { bc = c; br = yr; } } return [br, bc]; }
+        // only where ink actually runs across the midline to the next line (otherwise the glyph is whole as it is)
+        // ...and only against a digit-sized blob on that neighbouring line (not a bend arrow or slur passing by)
+        function digitNear(yc) { var cols = 0; for (var xr = a0; xr <= b0; xr++) { for (var yr = Math.round(yc - sp * 0.3); yr <= Math.round(yc + sp * 0.3); yr++) if (Math.abs(yr - yc) > tt && dark(xr, yr)) { cols++; break; } } return cols >= Math.max(3, sp * 0.3); }
+        var cutA = i > 0 && rowInk(Math.round(lyc - hb)) && b0 - a0 + 1 >= sp * 0.3 && digitNear(lyc - sp) ? lightest(lyc - sp * 0.72, lyc - sp * 0.3) : [lyc - hb - 1, 0],
+          cutB = i < 5 && rowInk(Math.round(lyc + hb)) && b0 - a0 + 1 >= sp * 0.3 && digitNear(lyc + sp) ? lightest(lyc + sp * 0.3, lyc + sp * 0.72) : [lyc + hb + 1, 0];
         if (i > 0) {
           var thick = 0, bestThick = 0, edge = Math.round(lyc - sp * 0.5);
           for (xx = a0 - 1; xx <= b0 + 1; xx++) { if (cont(xx, lyc - sp * 0.78, lyc - sp * 0.3) && dark(xx, edge)) { thick++; if (thick > bestThick) bestThick = thick; } else thick = 0; }
-          if (bestThick >= Math.max(3, sp * 0.18)) { over.push({ a: a0, b: b0, line: i }); return; }
+          // ink running up into the next line's zone: a tall glyph (clef, time signature, rest) — unless a number was
+          // just read right above on the previous line, i.e. two digits of a chord touching in a blurry photo
+          var stacked = cutA[1] < (b0 - a0 + 1) * 0.5 && notes.some(function (n) { return n.s === i && Math.abs(n.x - (a0 + b0) / 2) < sp * 0.5; });
+          if (bestThick >= Math.max(3, sp * 0.18) && !stacked) { over.push({ a: a0, b: b0, line: i }); return; }
         }
-        var ya3 = 1e9, yb3 = -1;
-        for (xx = a0; xx <= b0; xx++) for (yy = lyc - hb; yy <= lyc + hb; yy++) if (Math.abs(yy - lyc) > tt && dark(xx, yy)) { if (yy < ya3) ya3 = yy; if (yy > yb3) yb3 = yy; }
+        var ya3 = 1e9, yb3 = -1, yTopC = Math.max(lyc - hb, cutA[0] + 1), yBotC = Math.min(lyc + hb, cutB[0] - 1);
+        for (xx = a0; xx <= b0; xx++) for (yy = yTopC; yy <= yBotC; yy++) if (Math.abs(yy - lyc) > tt && dark(xx, yy)) { if (yy < ya3) ya3 = yy; if (yy > yb3) yb3 = yy; }
         if (yb3 < 0) return;
         var hh = yb3 - ya3 + 1;
         if (hh < sp * 0.38 || hh > sp * 0.97 || b0 - a0 + 1 < Math.max(2, sp * 0.1)) return;
@@ -4095,6 +4315,11 @@ var LocalTab = (function () {
     function readTall(a2, b2, yTop, yBot, set) {
       var qa = 1e9, qb = -1, xa = 1e9, xb = -1, xx, yy;
       var clean = function (cx, cy) { if (!dark(cx, cy)) return 0; for (var li = 0; li < 6; li++) { var ly = lineY(li, cx); if (Math.abs(cy - ly) <= tt && !dark(cx, ly - tt - 1) && !dark(cx, ly + tt + 1)) return 0; } return 1; };
+      // the group may cover only the thick middle of a big digit: widen to the whole connected glyph
+      var colInk = function (cx) { for (var cy = Math.round(yTop); cy <= Math.round(yBot); cy++) if (clean(cx, cy)) return true; return false; };
+      var lim = Math.round(sp * 1.2), gap2;
+      for (gap2 = 0, xx = a2 - 1; xx >= a2 - lim; xx--) { if (colInk(xx)) { a2 = xx; gap2 = 0; } else if (++gap2 > 1) break; }
+      for (gap2 = 0, xx = b2 + 1; xx <= b2 + lim; xx++) { if (colInk(xx)) { b2 = xx; gap2 = 0; } else if (++gap2 > 1) break; }
       for (xx = a2; xx <= b2; xx++) for (yy = Math.round(yTop); yy <= Math.round(yBot); yy++) if (clean(xx, yy)) { if (yy < qa) qa = yy; if (yy > qb) qb = yy; if (xx < xa) xa = xx; if (xx > xb) xb = xx; }
       if (qb < 0 || qb - qa < sp * 0.9) return null;
       return classify(vec(function (gx, gy) { return clean(xa + gx, qa + gy); }, xb - xa + 1, qb - qa + 1), set);
@@ -4102,12 +4327,14 @@ var LocalTab = (function () {
     var top0 = lineY(0, X0), mid = st.top + sp * 2.5, bot0 = lineY(5, X0);
     barX.forEach(function (bx, bi) {
       var gs = overG.filter(function (o) { return o.a > bx && o.a < bx + sp * 6; });
+      if (opt.dbgTs && bi === 0) opt.dbgTs.push({ over: overG.slice(0, 6), bx: bx, clefX: clefX });
       if (!gs.length) return;
       var gI = 0;
       if (bi === 0) { var t0 = readTall(gs[0].a, gs[0].b, top0 - sp * 0.3, top0 + sp * 1.7, TPL_L); if (!t0 || /[TAB]/.test(t0.s) || gs.length > 1) gI = 1; }
       var gg = gs[gI]; if (!gg) return;
       var up = readTall(gg.a, gg.b, top0 - sp * 0.4, mid, TPL_L), dn = readTall(gg.a, gg.b, mid, bot0 + sp * 0.4, TPL_L);
       if (up && dn && /^\d$/.test(up.s) && /^(2|4|8)$/.test(dn.s) && up.score > 0.5 && dn.score > 0.5 && +up.s > 0) ts[bi] = up.s + '/' + dn.s;
+      if (opt.dbgTs) opt.dbgTs.push({ bi: bi, bx: bx, gs: gs, gI: gI, up: up, dn: dn });
     });
 
     var usedG = [];
@@ -4152,7 +4379,14 @@ var LocalTab = (function () {
       for (var cx = Math.round(xc - sp * 0.5); cx <= Math.round(xc + sp * 0.5); cx++) {
         for (var yy = s0; yy <= s1; yy++) {
           if (!dark(cx, yy)) continue;
-          var e = yy, gp = 0; while (e < yB + sp * 7 && (dark(cx, e + 1) || (gp < 1 && dark(cx, e + 2)))) { if (!dark(cx, e + 1)) gp++; e++; }
+          // follow the stroke down; it may lean a pixel sideways now and then (photo not perfectly flat)
+          var e = yy, gp = 0, ex = cx;
+          while (e < yB + sp * 7) {
+            var nx = dark(ex, e + 1) ? ex : dark(ex + 1, e + 1) ? ex + 1 : dark(ex - 1, e + 1) ? ex - 1 : null;
+            if (nx != null) { ex = nx; e++; continue; }
+            if (gp < 1 && (dark(ex, e + 2) || dark(ex + 1, e + 2) || dark(ex - 1, e + 2))) { gp++; e++; continue; }
+            break;
+          }
           var len = e - yy;
           // a stem is thin: the pixels beside it (outside the beam) are light at its middle
           var midY = Math.round(yy + len * 0.35), thin = !dark(cx - Math.max(2, Math.round(sp * 0.25)), midY) && !dark(cx + Math.max(2, Math.round(sp * 0.25)), midY);
@@ -4215,6 +4449,22 @@ var LocalTab = (function () {
     }
     stemLens.sort(function (a2, b2) { return a2 - b2; });
     var medStem = stemLens.length ? stemLens[stemLens.length >> 1] : 0;
+    // meter from the rhythm itself: when the time signature could not be read (or reads oddly), but most bars whose
+    // every beat has a stem add up to the same other length, that length is the meter (3/4 waltz, 2/4, 6/8 …)
+    if (!opt.tsSure && !Object.keys(ts).length) { // a printed time signature wins
+      var sums = {}, nMeas = 0;
+      outBars.forEach(function (bar) {
+        if (bar.beats.length < 2 || bar.beats.some(function (b) { return b.rest || !b.stem; })) return;
+        var tot = 0; bar.beats.forEach(function (b) { var bm = beamsAt(b.stem), d = bm.beams ? 1 / Math.pow(2, bm.beams) : (b.stem.len < medStem * 0.65 ? 2 : 1); tot += bm.dot ? d * 1.5 : d; });
+        var key = String(Math.round(tot * 4) / 4); sums[key] = (sums[key] || 0) + 1; nMeas++;
+      });
+      var top = Object.keys(sums).sort(function (a2, b2) { return sums[b2] - sums[a2]; })[0], METER = { '2': '2/4', '3': '3/4', '4': '4/4', '5': '5/4', '6': '6/4', '1.5': '3/8' };
+      var have = outBars.map(function (b2) { var t2 = b2.ts.split('/'); return (+t2[0]) * 4 / (+t2[1]); });
+      // strong evidence only, and only for this staff (a misread staff must not change the meter of the whole song)
+      if (top && nMeas >= 4 && sums[top] >= nMeas * 0.75 && METER[top] && !(sums[String(have[0])] > nMeas * 0.1)) {
+        if (have.every(function (L) { return Math.abs(L - +top) > 0.01; })) outBars.forEach(function (b2) { b2.ts = METER[top]; });
+      }
+    }
     var bars2 = outBars.map(function (bar) {
       var tsp = bar.ts.split('/'), len = (+tsp[0]) * 4 / (+tsp[1]);
       if (!bar.beats.length) return { ts: bar.ts, beats: [{ q: len, r: 1 }], empty: true };
@@ -4282,9 +4532,11 @@ var LocalTab = (function () {
       var ya = Math.round(p.bot + 2), yb = Math.round(s.top - 2);
       if (yb - ya > p.sp * 12) joined = false;
       else for (var x = Math.max(0, xa); x <= xb && !joined; x++) {
-        var c = 0, cs = 0, off = Math.max(3, Math.round(p.sp * 0.4));
-        for (var y = ya; y <= yb; y++) { if (g[y * W + x] < TH) c++; if (x + off < W && g[y * W + x + off] < TH) cs++; }
-        if (c >= (yb - ya + 1) * 0.92 && cs < (yb - ya + 1) * 0.5) joined = true; // a thin line, not a dark border
+        for (var sl = -0.04; sl <= 0.0401 && !joined; sl += 0.02) { // the joining line may lean a little in a photo
+          var c = 0, cs = 0, off = Math.max(3, Math.round(p.sp * 0.4));
+          for (var y = ya; y <= yb; y++) { var xs = Math.round(x + sl * (y - ya)); if (xs < 0 || xs >= W) continue; if (g[y * W + xs] < TH) c++; if (xs + off < W && g[y * W + xs + off] < TH) cs++; }
+          if (c >= (yb - ya + 1) * 0.9 && cs < (yb - ya + 1) * 0.5) joined = true; // a thin line, not a dark border
+        }
       }
       if (joined) cur.push(s); else { out.push(cur); cur = [s]; }
     });
@@ -4296,7 +4548,7 @@ var LocalTab = (function () {
     opt = opt || {};
     var sys = systemsOf(an.gray, an.staves), ts = opt.ts || '4/4';
     var systems = sys.map(function (staves) {
-      var tracks = staves.map(function (st) { var r = readStaff(an.gray, st, { ts: ts, th: opt.th, soft: opt.soft }); return r; });
+      var tracks = staves.map(function (st) { var r = readStaff(an.gray, st, { ts: ts, th: opt.th, soft: opt.soft, thrK: opt.thrK }); return r; });
       // a time signature seen on any staff of the system applies to the next systems too
       tracks.forEach(function (r) { if (r.ts) ts = r.ts; });
       var glyphs = 0, low = 0, fb = 0, nb = 0;
@@ -4375,6 +4627,15 @@ var Seq = (function () {
   /* note-length modes: score (as written), stac (50 %), short (75 %), legato (hold to the next attack),
      ring (each string rings until it is played again) */
   var noteLen = 'score';
+  /* ---------- playing like a person ----------
+     A real player is never on the grid to the millisecond, leans on the downbeats, alternates pick strokes in
+     fast lines, strums at slightly different speeds, frets a hair sharp or flat, lets long notes sing with a little
+     vibrato and squeaks the wound strings when the hand jumps. All of it is deterministic (seeded by the note),
+     so a loop sounds the same each time and rendered voices can still be reused from the cache. */
+  var human = true;
+  try { human = localStorage.getItem('tonelab.feel') !== 'exact'; } catch (e) { }
+  function hr(a) { a = a | 0; a = (a + 0x6D2B79F5) | 0; var t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }
+  function seedOf(t, s, f) { return Math.round(t * 997) * 7919 + (s || 0) * 131 + (f || 0) * 17; }
   function applyLength(list, tEnd) {
     if (noteLen === 'score') return list;
     var out = list.map(function (n) { return Object.assign({}, n); });
@@ -4412,11 +4673,35 @@ var Seq = (function () {
       dir = hint ? hint : ((t - lastChordT) < 0.2 * speed ? -dir : 1);
       lastChordT = t;
       var spread = g[0].brush ? g[0].brush / Math.max(1, g.length - 1) : (g.length >= 5 ? 0.007 : 0.009) * (dir < 0 ? 0.8 : 1);
+      if (human && !g[0].brush) spread *= 0.75 + 0.55 * hr(seedOf(t, 9, g.length)); // no two strums are equally fast
       g.slice().sort(function (a, b) { return dir > 0 ? b.s - a.s : a.s - b.s; }).forEach(function (n, i) { strum.set(n, i * spread); if (dir < 0) upStroke.add(n); });
     });
     var cur = {}, variant = 0, vid = 0;
+    // where each attack sits in its bar (for accents) and which way the pick moves (fast lines alternate)
+    var q = 60 / (song.bpm || 90), bi0 = 0, pickDir = new Map(), lastPickT = -9, lastDir = -1, feelOff = new Map();
+    var ph1 = hr(seedOf(song.bars.length, 1, 3)) * 6.28, ph2 = hr(seedOf(song.bars.length, 2, 5)) * 6.28;
+    Object.keys(groups).sort(function (a, b) { return a - b; }).forEach(function (k) {
+      var g = groups[k], t = parseFloat(k);
+      // timing: a slow wander (the player's time breathes) + a small random push or drag per attack
+      if (human) feelOff.set(k, (0.005 * Math.sin(2 * Math.PI * t / 7.3 + ph1) + 0.003 * Math.sin(2 * Math.PI * t / 3.1 + ph2)) + (hr(seedOf(t, 3, 1)) + hr(seedOf(t, 4, 2)) - 1) * 0.007);
+      if (!human || g.length >= 3 || g[0].scrape) return;
+      var fast = (t - lastPickT) * sc < 0.26;
+      var d = fast ? -lastDir : 1; lastDir = d; lastPickT = t;
+      g.forEach(function (n) { if (!n.stroke) pickDir.set(n, d); });
+    });
+    function accentAt(t) {
+      while (bi0 < song.bars.length - 1 && song.bars[bi0 + 1].t <= t + 1e-6) bi0++;
+      while (bi0 > 0 && song.bars[bi0].t > t + 1e-6) bi0--;
+      var pos = (t - song.bars[bi0].t) / q, fr = pos - Math.floor(pos + 1e-6);
+      if (pos < 0.02) return 1.07;
+      if (fr < 0.02 || fr > 0.98) return Math.abs(pos - 2) < 0.02 ? 1.04 : 1.02;
+      if (Math.abs(fr - 0.5) < 0.02) return 0.95;
+      return 0.91;
+    }
+    var lastOn = {};
     notes.forEach(function (n) {
       var tRel = ((n.t - T0) * sc) + (strum.get(n) || 0);
+      if (human) tRel = Math.max(0, tRel + (feelOff.get(n.t.toFixed(4)) || 0));
       var dur = Math.max(0.05, n.dur * sc);
       var s = n.s;
       if (n.scrape) { // pick scrape: its own noise voice
@@ -4428,16 +4713,35 @@ var Seq = (function () {
       var cont = v && (n.legato || n.tie) && Math.abs(v.t0 + v.r.dur - tRel) < 0.06;
       if (!cont) {
         variant = (variant + 1) % 3;
-        var up = upStroke.has(n) || n.stroke === -1;
+        var up = upStroke.has(n) || n.stroke === -1 || pickDir.get(n) === -1;
         var amp = 0.85 * (n.ghost ? 0.4 : 1) * (n.accent ? (n.accent === 2 ? 1.28 : 1.15) : 1) * (n.dead ? 0.8 : 1) * (n.harm ? 0.72 : 1) * (up ? 0.9 : 1) * (0.95 + 0.05 * variant) * (n.tremPick ? (n.tremPick % 2 ? 0.88 : 0.97) : 1);
         var bright = n.pm ? 0.42 : n.dead ? 0.3 : n.harm ? (n.pinch ? 0.62 : 0.5) : (up ? 0.78 : 0.72);
+        var pickAt = 1, cents = 0, hseed = seedOf(n.t, s, n.fret);
+        if (human) {
+          var acc = accentAt(n.t) * (1 + [-0.06, -0.03, 0, 0.03, 0.06][Math.floor(hr(hseed) * 5)]);
+          if (upStroke.has(n) && s >= 5) acc *= 0.8;                       // an upstrum barely catches the low strings
+          amp = Math.round(amp * acc / 0.02) * 0.02;                          // stepped, so repeated notes still share renders
+          bright = Math.max(0.2, Math.min(0.92, bright * (1 + (acc - 1) * 0.8)));
+          pickAt = [0.92, 1, 1.08][Math.floor(hr(hseed + 1) * 3)];           // the pick never lands in exactly the same spot
+          if (!n.harm && !n.dead && n.fret > 0) cents = [-0.03, 0, 0.03][Math.floor(hr(hseed + 2) * 3)]; // finger pressure
+        }
         v = { id: vid++, s: s, t0: tRel, notes: [], r: {
           s: s, open: open, dur: 0, pts: [], lenPts: [], vib: [], pm: !!n.pm, dead: !!n.dead, harm: !!n.harm, vel: amp,
-          exc: [[0, amp, bright, n.pm ? -2 : -1]], seed: s * 131 + n.fret * 7 + variant
+          exc: [[0, amp, bright, n.pm ? -2 : -1, pickAt]], seed: s * 131 + n.fret * 7 + variant, cents: cents
         } };
+        // the fretting hand jumping along a wound string squeaks (not every time)
+        var pv = lastOn[s];
+        if (human && s >= 4 && pv && !n.legato && !n.tie && Math.abs(n.fret - pv.fret) >= 3 && (n.fret > 0 || pv.fret > 0)) {
+          var gap = tRel - pv.t;
+          if (gap > 0.14 && gap < 1.2 && hr(hseed + 3) < 0.55) {
+            var sd = Math.min(0.12, gap * 0.45);
+            voices.push({ id: vid++, s: s, t0: Math.max(0, tRel - sd - 0.004), notes: [], scrapeOnly: true, r: { s: s, squeak: 1, dur: sd, vel: 0.5 + 0.5 * hr(hseed + 4), seed: hseed & 0xffff, pts: [], lenPts: [], vib: [], exc: [] } });
+          }
+        }
+        lastOn[s] = { t: tRel, fret: n.fret };
         voices.push(v); cur[s] = v;
       }
-      var r = v.r, tau = tRel - v.t0, base = n.midi;
+      var r = v.r, tau = tRel - v.t0, base = n.midi + (cont ? 0 : (r.cents || 0));
       var prevN = v.notes[v.notes.length - 1];
       if (cont && prevN && prevN.slideToNext) { // legato slide: fret-by-fret glide into this note, no new pick
         var st = Math.max(0, tau - Math.min(0.11, (tau - prevN.tau) * 0.5));
@@ -4472,6 +4776,8 @@ var Seq = (function () {
         r.pts.push([tau + dur * 0.55, base, 3]); r.pts.push([tau + dur * 0.97, n.shiftTo, 0]);
         r.lenPts.push([tau + dur * 0.55, base, 3]); r.lenPts.push([tau + dur * 0.97, n.shiftTo, 0]);
       }
+      if (human && !n.vib && !n.bend && !n.whammy && !n.pm && !n.dead && !n.harm && dur >= 0.55 && (groups[n.t.toFixed(4)] || []).length <= 2)
+        r.vib.push([tau + Math.min(0.28, dur * 0.35), tau + dur, 0.12, 5.2, 0]); // a long note sings a little
       if (n.vib) r.vib.push(n.vib === 2 ? [tau + Math.min(0.1, dur * 0.15), tau + dur, 0.9, 4.9, 0] : [tau + Math.min(0.08, dur * 0.15), tau + dur, 0.35, 5.7, 0]);
       if (n.barVib) r.vib.push([tau, tau + dur, n.barVib === 2 ? 0.8 : 0.35, 5.2, 1]);
       v.notes.push({ tau: tau, base: base, slideToNext: !!n.slideToNext });
@@ -4492,7 +4798,7 @@ var Seq = (function () {
       r.pts.sort(function (a, b) { return a[0] - b[0]; }); r.lenPts.sort(function (a, b) { return a[0] - b[0]; });
       var rr = function (x) { return Math.round(x * 1000) / 1000; };
       v.key = hash(JSON.stringify([r.s, r.open, rr(r.dur), r.pts.map(function (p) { return [rr(p[0]), p[1], p[2]]; }),
-        r.lenPts.map(function (p) { return [rr(p[0]), p[1], p[2]]; }), r.vib, r.pm, r.dead, r.harm, r.scrape, rr(r.vel), r.exc.map(function (e) { return [rr(e[0]), e[1], e[2], e[3]]; }), r.seed]));
+        r.lenPts.map(function (p) { return [rr(p[0]), p[1], p[2]]; }), r.vib, r.pm, r.dead, r.harm, r.scrape, r.squeak, rr(r.vel), r.exc.map(function (e) { return [rr(e[0]), e[1], e[2], e[3], e[4]]; }), r.seed]));
     });
     display.sort(function (a, b) { return a.t - b.t; });
     dirty = false;
@@ -4640,10 +4946,12 @@ var Seq = (function () {
     speed: function () { return speed; },
     setLoop: function (x) { loop = x; },
     setNoteLength: function (m) { noteLen = m; dirty = true; }, noteLength: function () { return noteLen; },
+    setHuman: function (on) { human = !!on; dirty = true; try { localStorage.setItem('tonelab.feel', on ? 'human' : 'exact'); } catch (e) { } }, human: function () { return human; },
     loop: function () { return loop; },
     play: play, stop: stop, isPlaying: function () { return playing || starting; },
     position: position, songTime: songTime,
     display: function () { if (dirty) build(); return display; },
+    _voices: function () { if (dirty) build(); return voices; },
     sectionLen: function () { if (dirty) build(); return sectionLen; },
     cycleLen: function () { return cycleLen; },
     T0: function () { return T0; },
@@ -6868,6 +7176,8 @@ var App = (function () {
     $('#selTrack').addEventListener('change', function (e) { useTrack(parseInt(e.target.value, 10)); });
     $('#selTuning').addEventListener('change', function (e) { retune(e.target.value); });
     $('#selLen').addEventListener('change', function (e) { var was = Seq.isPlaying(); if (was) Seq.stop(); Seq.setNoteLength(e.target.value); if (was) Seq.play(); });
+    $('#selFeel').value = Seq.human() ? 'human' : 'exact';
+    $('#selFeel').addEventListener('change', function (e) { var was = Seq.isPlaying(); if (was) Seq.stop(); Seq.setHuman(e.target.value === 'human'); if (was) Seq.play(); });
     $('#inBpm').addEventListener('change', function (e) {
       var v = parseFloat(e.target.value); if (!(v >= 30 && v <= 300)) return;
       if (current.kind === 'pdf' && current.pdf && current.pdf.photo) { // photo scores: rebuild at the new tempo
