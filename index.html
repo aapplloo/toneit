@@ -346,7 +346,11 @@ textarea.code { width: 100%; border: 0; border-radius: 14px; background: var(--f
 .mixnote { margin-top: 10px; line-height: 1.5; background: #fff7ed; color: #9a4a12; border-radius: 12px; padding: 10px 12px; }
 /* no zoom on double tap (pinch zoom still works), no word selection when tapping controls quickly */
 html, body, button, a, summary, label, select, input, textarea, .seg, .chain, .dock, .card { touch-action: manipulation; }
+/* text can't be selected anywhere (no accidental highlight or long-press menu while playing)
+   except where something is meant to be copied or typed: input boxes, the tab/tone-code boxes */
+html, body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 button, summary, .seg, .chain, .dock, .btn, .tonetag, .th, .lmain, .mini { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+input, textarea, [contenteditable="true"], .code, .copyable { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
 /* iPhone zooms into any text box smaller than 16px when it is tapped */
 @media (pointer: coarse) {
   .input, .select, .f select, .f input, .list-param .select, .tonemap .select, input, select, textarea, .modal textarea, textarea.code { font-size: 16px; }
