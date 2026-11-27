@@ -4345,7 +4345,7 @@ var LocalTab = (function () {
     /* beams drawn among the lines or right above them (rhythm written above the tab): long thick horizontal bars
        that are not staff lines. They are no part of any number, so the number finder and the rest finder skip them */
     var bmY0 = Math.round(Math.min(lineY(0, X0), lineY(0, X1)) - sp * 3), bmY1 = Math.round(Math.max(lineY(5, X0), lineY(5, X1)) + sp * 0.6);
-    var beamM = new Uint8Array(W * Math.max(1, bmY1 - bmY0 + 1)), minBeam = Math.round(sp * 1.3);
+    var beamM = new Uint8Array(W * Math.max(1, bmY1 - bmY0 + 1)), minBeam = Math.round(sp * (OFF.beam08 ? 0.8 : 1.3));
     (function () {
       for (var yy = Math.max(0, bmY0); yy <= Math.min(H - 1, bmY1); yy++) {
         var run = 0;
@@ -4372,7 +4372,7 @@ var LocalTab = (function () {
       ws.sort(function (p1, p2) { return p1 - p2; }); wmax = ws.length ? ws[ws.length >> 1] : 0; // typical row width (the stem joins at one end)
       var top = lefts[0], bot = lefts[lefts.length - 1];
       if (opt.dbgSlashy && top) { var stt = []; for (var q9 = Math.round(a - sp * 0.5); q9 <= Math.round(b + sp * 0.2); q9++) if (stemTop[q9] < 1e8) stt.push(Math.round(stemTop[q9] - lineY(5, q9))); opt.dbgSlashy.push({ x: a, li: li, n: lefts.length, wmax: wmax, lean: top[1] - bot[1], bot: Math.round(bot[0] - lineY(5, a)), stt: stt.slice(0, 8) }); }
-      if (lefts.length < sp * 0.4 || wmax > sp * 0.36) return false;
+      if (lefts.length < sp * 0.4 || wmax > sp * 0.45) return false;
       if (top[1] - bot[1] < sp * 0.3) return false; // leans right going up
       for (var sx = Math.round(a - sp * 0.5); sx <= Math.round(b + sp * 0.2); sx++) if (stemTop[sx] < lineY(5, sx) - sp * 0.6 && Math.abs(stemTop[sx] - bot[0]) < sp * 0.6) return true;
       return false;
@@ -4396,6 +4396,7 @@ var LocalTab = (function () {
       for (x = X0; x <= X1; x++) if (block[x]) { flag[x] = 0; any[x] = 0; }
       var runs = [];
       for (x = X0; x <= X1; x++) if (flag[x]) { var ra = x; while (x + 1 <= X1 && (flag[x + 1] || (x + 2 <= X1 && flag[x + 2] && !block[x + 1]))) x++; runs.push([ra, x]); }
+      if (opt.dbgRun) { var nb = 0, nf = 0, na = 0; for (x = X0; x <= X1; x++) { if (block[x]) nb++; if (flag[x]) nf++; if (any[x]) na++; } opt.dbgRun.push([i, 'runs', runs.length, 'flag', nf, 'any', na, 'block', nb, runs.slice(0, 6)]); }
       var ext = Math.max(1, Math.round(sp * 0.2));
       runs.forEach(function (rn, ri) {
         var lim0 = ri ? runs[ri - 1][1] + 1 : X0, lim1 = ri < runs.length - 1 ? runs[ri + 1][0] - 1 : X1;
@@ -4422,22 +4423,44 @@ var LocalTab = (function () {
           // just read right above on the previous line, i.e. two digits of a chord touching in a blurry photo
           // (never right at the start of the staff: that is where the clef and the time signature stand)
           var stacked = a0 > X0 + sp * 5.5 && cutA[1] < (b0 - a0 + 1) * 0.5 && notes.some(function (n) { return n.s === i && Math.abs(n.x - (a0 + b0) / 2) < sp * 0.5; });
-          if (bestThick >= Math.max(3, sp * 0.18) && !stacked) { over.push({ a: a0, b: b0, line: i }); return; }
+          // a stem drawn up from this number (rhythm written above the tab): one thin stroke carrying on through the
+          // line above — not a tall sign
+          var upStem = false;
+          if (bestThick >= Math.max(3, sp * 0.18) && bestThick <= sp * 0.26 && a0 > X0 + sp * 5.5 && b0 - a0 + 1 >= sp * 0.4) {
+            var thinCols = 0; for (xx = a0 - 1; xx <= b0 + 1; xx++) if (cont(xx, lyc - sp * 1.15, lyc - sp * 0.3)) thinCols++;
+            upStem = thinCols > 0 && thinCols <= sp * 0.26 && !!OFF.upglyphOn;
+          }
+          if (bestThick >= Math.max(3, sp * 0.18) && !stacked && !upStem) { if (opt.dbgRun) opt.dbgRun.push([i, a0, b0, 'over', bestThick]); over.push({ a: a0, b: b0, line: i }); return; }
         }
         var ya3 = 1e9, yb3 = -1, yTopC = Math.max(lyc - hb, cutA[0] + 1), yBotC = Math.min(lyc + hb, cutB[0] - 1);
         for (xx = a0; xx <= b0; xx++) for (yy = yTopC; yy <= yBotC; yy++) if (Math.abs(yy - lyc) > tt && dark(xx, yy)) { if (yy < ya3) ya3 = yy; if (yy > yb3) yb3 = yy; }
-        if (yb3 < 0) return;
+        if (yb3 < 0) { if (opt.dbgRun) opt.dbgRun.push([i, a0, b0, 1]); return; }
+        // a stem attached to the top (or bottom) of the number runs to the edge of the band: trim it off the number
+        if (!OFF.trim) {
+          var stemW = Math.max(2, Math.round(sp * 0.2)), rowCnt = function (yr) { var c = 0; for (var xr = a0; xr <= b0; xr++) if (Math.abs(yr - lyc) > tt && dark(xr, yr)) c++; return c; };
+          // only a stroke that carries on out of the band (not the narrow tip of a number, not a cut between two)
+          var goesOut = function (yr, yo) { for (var xr = a0; xr <= b0; xr++) if (dark(xr, yr) && dark(xr, yo) && dark(xr, yo + (yo - yr))) return true; return false; };
+          var t0 = ya3, t1 = yb3, wide = 0;
+          var straightUp = false; for (var xs2 = a0; xs2 <= b0 && !straightUp; xs2++) if (cont(xs2, yTopC - sp * 0.9, yTopC)) straightUp = true; // a stem stands straight; a bend arrow or slur curves away
+          var outBelow = yb3 >= yBotC - 1 && goesOut(yb3, yb3 + 1); // a stroke passing through the whole band belongs to something else (bend arrow)
+          if (straightUp && !outBelow && yTopC === lyc - hb && ya3 <= yTopC + 1 && rowCnt(ya3) <= stemW && goesOut(ya3, ya3 - 1)) { while (t0 < lyc - sp * 0.25 && rowCnt(t0) <= stemW) t0++; }
+          if (OFF.trimb && yBotC === lyc + hb && yb3 >= yBotC - 1 && rowCnt(yb3) <= stemW && goesOut(yb3, yb3 + 1)) { while (t1 > lyc + sp * 0.25 && rowCnt(t1) <= stemW) t1--; }
+          for (yy = t0; yy <= t1; yy++) wide = Math.max(wide, rowCnt(yy));
+          // what is left must be a number (wide somewhere), not the rest of a bend arrow or slur
+          var thinAll = ya3 <= lyc - hb + 1 && yb3 >= lyc + hb - 1 && b0 - a0 < sp * 0.35;
+          if ((t0 !== ya3 || t1 !== yb3) && wide >= sp * 0.35 && !thinAll) { ya3 = t0; yb3 = t1; }
+        }
         var hh = yb3 - ya3 + 1;
-        if (hh < sp * 0.38 || hh > sp * 0.97 || b0 - a0 + 1 < Math.max(2, sp * 0.1)) return;
-        if (ya3 <= lyc - hb + 1 && yb3 >= lyc + hb - 1 && b0 - a0 < sp * 0.35) return; // a thin stroke through the whole band (bend arrow, slur)
+        if (hh < sp * 0.38 || hh > sp * 0.97 || b0 - a0 + 1 < Math.max(2, sp * 0.1)) { if (opt.dbgRun) opt.dbgRun.push([i, a0, b0, 2]); return; }
+        if (ya3 <= lyc - hb + 1 && yb3 >= lyc + hb - 1 && b0 - a0 < sp * 0.35) { if (opt.dbgRun) opt.dbgRun.push([i, a0, b0, 3]); return; } // a thin stroke through the whole band (bend arrow, slur)
         if (b0 - a0 + 1 <= Math.max(3, sp * 0.4)) { // a stem hanging below a note on the line above (a number ends before the band edge)
-          for (xx = a0; xx <= b0; xx++) if (cont(xx, lyc + sp * 0.3, lyc + sp * 0.8)) return;
+          for (xx = a0; xx <= b0; xx++) if (cont(xx, lyc + sp * 0.3, lyc + sp * 0.8)) { if (opt.dbgRun) opt.dbgRun.push([i, a0, b0, 4]); return; }
         }
         if (b0 - a0 + 1 <= sp * 0.45) { // a stem coming down from a note above this line
-          for (xx = a0; xx <= b0; xx++) if (stemTop[xx] < lyc - sp * 0.2) return;
+          for (xx = a0; xx <= b0; xx++) if (stemTop[xx] < lyc - sp * 0.2) { if (opt.dbgRun) opt.dbgRun.push([i, a0, b0, 5]); return; }
         }
         if (b0 - a0 + 1 <= Math.max(3, sp * 0.26)) { // a bend arrow / slur going up from a note on this or a lower line
-          for (xx = a0; xx <= b0; xx++) if (cont(xx, lyc - sp * 0.8, lyc - sp * 0.3)) return;
+          for (xx = a0; xx <= b0; xx++) if (cont(xx, lyc - sp * 0.8, lyc - sp * 0.3)) { if (opt.dbgRun) opt.dbgRun.push([i, a0, b0, 6]); return; }
         }
         // cut into characters: split wide runs at their thinnest column
         var pieces = [[a0, b0]];
@@ -4465,6 +4488,12 @@ var LocalTab = (function () {
           if (w < 2) return null;
           setThr(pa, pb, qa, qb);
           var cl = disambig(classify(vec(function (gx, gy) { return ink(pa + gx, qa + gy); }, w, h)), pa, pb, qa, qb);
+          // a heavy serif 7 can look like a 2 to the templates: a 2 has a foot running across its bottom, a 7 does not
+          if (cl.s === '2' && cl.score < 0.58 && !OFF.seven) {
+            var foot = 0; for (var fy = Math.round(qb - h * 0.18); fy <= qb; fy++) { var fl = -1, fr = -1; for (var fx = pa; fx <= pb; fx++) if (ink(fx, fy) > 0.5) { if (fl < 0) fl = fx; fr = fx; } if (fl >= 0) foot = Math.max(foot, fr - fl + 1); }
+            var topBar = 0; for (fy = qa; fy <= Math.round(qa + h * 0.2); fy++) { var tc = 0; for (fx = pa; fx <= pb; fx++) if (ink(fx, fy) > 0.5) tc++; topBar = Math.max(topBar, tc); }
+            if (foot <= w * 0.45 && topBar >= w * 0.85) cl = { s: '7', score: Math.max(cl.score, 0.6), margin: 0.06, s2: '2' };
+          }
           if (opt.debug) opt.debug.push({ ly: lyc, stemTop: Math.min.apply(null, Array.prototype.slice.call(stemTop, pa, pb + 1)), probe: lineY(5, pa) + sp * 0.9, line: i, x: pa, w: w, h: h, s: cl.s, score: +cl.score.toFixed(2), m: +cl.margin.toFixed(2), img: (function () { var a2 = []; for (var yy2 = 0; yy2 < h; yy2++) { var row = ''; for (var xx2 = 0; xx2 < w; xx2++) row += ink(pa + xx2, qa + yy2) > 0.5 ? '#' : '.'; a2.push(row); } return a2; })() });
           return { a: pa, b: pb, s: cl.s, score: cl.score, margin: cl.margin, s2: cl.s2 };
         }
@@ -4520,7 +4549,6 @@ var LocalTab = (function () {
       var cur = null;
       var flush = function () {
         if (!cur) return;
-        if (cur.d.length === 1 && !cur.dead && slashy(cur.d[0].a, cur.d[0].b, i)) { slashXs.push((cur.d[0].a + cur.d[0].b) / 2); cur = null; return; }
         if (cur.d.length) {
           var parts = cur.d.length > 2 || parseInt(cur.d.map(function (q) { return q.s; }).join(''), 10) > 24 ? segment(cur.d) : [cur.d];
           parts.forEach(function (pp) {
@@ -4533,6 +4561,8 @@ var LocalTab = (function () {
         cur = null;
       };
       toks.forEach(function (tk) {
+        if (opt.dbgTok) opt.dbgTok.push([i, tk.a, tk.b, tk.s, +tk.score.toFixed(2)]);
+        if (!OFF.slash && /\d/.test(tk.s) && slashy(tk.a, tk.b, i)) { flush(); slashXs.push((tk.a + tk.b) / 2); return; } // a rhythm slash read as a digit
         var near = cur && tk.a - cur.b <= sp * 0.32;
         // "10"–"24" can be spaced like two notes: join a leading 1/2 unless each part has its own stem
         if (cur && !near && tk.a - cur.b <= sp * 0.45 && cur.d.length === 1 && /^[12]$/.test(cur.d[0].s) && /\d/.test(tk.s) && parseInt(cur.d[0].s + tk.s, 10) <= 24) {
@@ -4562,7 +4592,9 @@ var LocalTab = (function () {
     // time signature: a tall pair of digits right after a bar line (the TAB clef at a system start is skipped)
     var ts = {};
     var overG = [];
-    over.sort(function (p, q) { return p.a - q.a; }).forEach(function (o) { var l = overG[overG.length - 1]; if (l && o.a - l.b < sp * 0.6) { l.a = Math.min(l.a, o.a); l.b = Math.max(l.b, o.b); } else overG.push({ a: o.a, b: o.b }); });
+    // a stem rising through a line next to a beam can look like a tall sign there: a thin one alone on one line is not
+    if (OFF.thinoverOn) over = over.filter(function (o) { return o.b - o.a + 1 > sp * 0.3 || over.some(function (q) { return q !== o && q.line !== o.line && q.a <= o.b + sp * 0.3 && q.b >= o.a - sp * 0.3; }); });
+    over.sort(function (p, q) { return p.a - q.a; }).forEach(function (o) { var l = overG[overG.length - 1]; if (l && o.a - l.b < sp * 0.6) { l.a = Math.min(l.a, o.a); l.b = Math.max(l.b, o.b); l.lines[o.line] = 1; } else { var lines = {}; lines[o.line] = 1; overG.push({ a: o.a, b: o.b, lines: lines }); } });
     function readTall(a2, b2, yTop, yBot, set) {
       var qa = 1e9, qb = -1, xa = 1e9, xb = -1, xx, yy;
       var clean = function (cx, cy) { if (!dark(cx, cy)) return 0; for (var li = 0; li < 6; li++) { var ly = lineY(li, cx); if (Math.abs(cy - ly) <= tt && !dark(cx, ly - tt - 1) && !dark(cx, ly + tt + 1)) return 0; } return 1; };
@@ -4611,7 +4643,9 @@ var LocalTab = (function () {
       if (bi === 0) usedG = usedG.concat(gs.filter(function (o) { var firstNote = notes.filter(function (n) { return n.x > bx; }).sort(function (p, q) { return p.x - q.x; })[0]; return !firstNote || o.b < firstNote.x; }));
       else if (ts[bi] && gs[0]) usedG.push(gs[0]);
     });
-    notes = notes.filter(function (n) { return !overG.some(function (o) { return n.x >= o.a - 1 && n.x <= o.b + 1; }) && !(clefX > 0 && n.x <= clefX + sp * 0.3 && n.x < barX[0] + sp * 4); });
+    // a sign spanning several lines (clef, time signature, rest) wipes numbers under it; one confined to a single line
+    // only takes that line's (a stem or beam end can make one there in a staff with the rhythm drawn above)
+    notes = notes.filter(function (n) { return !overG.some(function (o) { return n.x >= o.a - 1 && n.x <= o.b + 1 && (!OFF.thinoverOn || Object.keys(o.lines).length > 1 || o.lines[n.s - 1] || o.b - o.a + 1 > sp * 0.6); }) && !(clefX > 0 && n.x <= clefX + sp * 0.3 && n.x < barX[0] + sp * 4); });
     var startX = barX[0];
     if (clefX > 0 && clefX < barX[0] + sp * 4) startX = clefX;
     usedG.forEach(function (o) { if (o.a < barX[0] + sp * 7) startX = Math.max(startX, o.b); });
@@ -4757,7 +4791,7 @@ var LocalTab = (function () {
           [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (dd) { var q = [p[0] + dd[0], p[1] + dd[1]], k2 = q[0] + ',' + q[1]; if (!seen[k2] && dark(q[0], q[1]) && !isLineRow(q[0], q[1])) { seen[k2] = 1; st.push(q); } }); }
         if (!big && n >= Math.max(3, sp * sp * 0.02)) dot = true;
       }
-      return { beams: Math.min(3, Math.max(side(counts.slice(0, 3)), side(counts.slice(3)))), dot: dot };
+      return { beams: Math.min(3, Math.max(side(counts.slice(0, 3)), side(counts.slice(3)))), dot: false && dot }; // a dot under a note with its stem up is staccato
     }
     function durOf(b, medDn, medUp) {
       var sm = b.stem, bm = sm.up ? beamsUp(sm) : beamsAt(sm), med = sm.up ? medUp : medDn;
@@ -4802,7 +4836,7 @@ var LocalTab = (function () {
         if (sx >= 0) beats.push({ x: r.x, n: [], slash: true, stem: stemAt(sx) });
         else beats.push({ x: r.x, n: [], rest: true, rh: r.h });
       });
-      if (!OFF.slash) slashXs.forEach(function (x5) { if (x5 > L0 && x5 < R0 && !beats.some(function (b) { return Math.abs(b.x - x5) < sp * 0.4; })) { var st5 = null; for (var d5 = -Math.round(sp * 0.5); d5 <= Math.round(sp * 0.2) && !st5; d5++) if (stemTop[Math.round(x5 + d5)] < lineY(5, Math.round(x5 + d5)) - sp * 0.6) st5 = stemAt(x5 + d5); beats.push({ x: x5, n: [], slash: true, stem: st5 }); } });
+      if (!OFF.slash) slashXs.forEach(function (x5) { if (x5 > L0 && x5 < R0 && !beats.some(function (b) { return Math.abs(b.x - x5) < sp * 0.75; })) { var st5 = null; for (var d5 = -Math.round(sp * 0.5); d5 <= Math.round(sp * 0.2) && !st5; d5++) if (stemTop[Math.round(x5 + d5)] < lineY(5, Math.round(x5 + d5)) - sp * 0.6) st5 = stemAt(x5 + d5); beats.push({ x: x5, n: [], slash: true, stem: st5 }); } });
       beats.sort(function (p, q) { return p.x - q.x; });
       outBars.push({ L: L0, R: R0, ts: curTs, beats: beats, repeat: rpt });
     }
