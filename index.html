@@ -4355,12 +4355,38 @@ var LocalTab = (function () {
         var U = readSpan(A.a, Bt.b);
         if (U && U.score > Math.max(A.score, Bt.score) - 0.03 && U.score > 0.65) { toks.splice(ti, 2, U); ti--; }
       }
+      // a run of digits like "109" is two notes squeezed together ("10" then "9"), not three: pair a leading 1 or 2
+      // with the next digit when they sit tighter than the following gap and don't each have their own stem
+      function segment(d) {
+        // with rhythm stems under the tab, each note owns one stem: give every digit to its nearest stem
+        var xs = [], xa = d[0].a, xb = d[d.length - 1].b;
+        for (var xq = Math.round(xa - sp * 0.2); xq <= Math.round(xb + sp * 0.2); xq += Math.max(1, Math.round(sp * 0.25))) {
+          var st0 = stemAt(xq); if (st0 && st0.x >= xa - sp * 0.3 && st0.x <= xb + sp * 0.3 && !xs.some(function (v) { return Math.abs(v - st0.x) < sp * 0.3; })) xs.push(st0.x);
+        }
+        xs.sort(function (a, b) { return a - b; });
+        if (xs.length >= 2 && xs.length < d.length) {
+          var grp = xs.map(function () { return []; });
+          d.forEach(function (q) { var c = (q.a + q.b) / 2, bi = 0; xs.forEach(function (v, k2) { if (Math.abs(v - c) < Math.abs(xs[bi] - c)) bi = k2; }); grp[bi].push(q); });
+          var okS = grp.every(function (gg) { if (!gg.length || gg.length > 2) return false; var v = gg.map(function (q) { return q.s; }).join(''); return (gg.length === 1 || v[0] !== '0') && parseInt(v, 10) <= 24; });
+          if (okS) return grp;
+        }
+        var out = [], j = 0, tau = Math.max(2, sp * 0.14);
+        while (j < d.length) {
+          if (j + 1 < d.length && /^[12]$/.test(d[j].s) && /\d/.test(d[j + 1].s) && parseInt(d[j].s + d[j + 1].s, 10) <= 24) {
+            var gin = d[j + 1].a - d[j].b, gout = j + 2 < d.length ? d[j + 2].a - d[j + 1].b : 1e9;
+            var s1 = stemAt((d[j].a + d[j].b) / 2), s2 = stemAt((d[j + 1].a + d[j + 1].b) / 2), own = s1 && s2 && Math.abs(s1.x - s2.x) > sp * 0.3;
+            if (!own && (gin <= tau || gin < gout)) { out.push([d[j], d[j + 1]]); j += 2; continue; }
+          }
+          out.push([d[j]]); j++;
+        }
+        return out;
+      }
       // characters → notes: digits close together are one number; ( ) ghost, < > harmonic
       var cur = null;
       var flush = function () {
         if (!cur) return;
         if (cur.d.length) {
-          var parts = cur.d.length > 2 || parseInt(cur.d.map(function (q) { return q.s; }).join(''), 10) > 24 ? cur.d.map(function (q) { return [q]; }) : [cur.d];
+          var parts = cur.d.length > 2 || parseInt(cur.d.map(function (q) { return q.s; }).join(''), 10) > 24 ? segment(cur.d) : [cur.d];
           parts.forEach(function (pp) {
             var val = parseInt(pp.map(function (q) { return q.s; }).join(''), 10), sc = Math.min.apply(null, pp.map(function (q) { return q.score; })), mg = Math.min.apply(null, pp.map(function (q) { return q.margin; }));
             var unsure = sc < 0.72 || mg < 0.05; glyphs++; if (unsure) low++;
@@ -4456,10 +4482,13 @@ var LocalTab = (function () {
           // its height: a rest is taller than a number
           var top5 = 1e9, bot5 = -1;
           for (var xx5 = a5; xx5 <= x2; xx5++) for (y2 = lineY(0, xx5); y2 <= lineY(5, xx5); y2++) { var on2 = false; for (var li2 = 0; li2 < 6; li2++) if (Math.abs(y2 - lineY(li2, xx5)) <= tt) on2 = true; if (!on2 && dark(xx5, y2)) { if (y2 < top5) top5 = y2; if (y2 > bot5) bot5 = y2; } }
-          if (bot5 - top5 >= sp * 0.9) out.push((a5 + x2) / 2);
+          if (bot5 - top5 >= sp * 0.9) out.push({ x: (a5 + x2) / 2, h: (bot5 - top5) / sp });
         }
       }
-      return out;
+      // one rest can fall apart into two blobs (the zigzag of a quarter rest): join close neighbours
+      var mg = [];
+      out.forEach(function (r) { var l = mg[mg.length - 1]; if (l && r.x - l.x < sp * 0.9) { l.x = (l.x + r.x) / 2; l.h = Math.max(l.h, r.h); } else mg.push({ x: r.x, h: r.h }); });
+      return mg;
     }
 
     // stems under the staff → durations
@@ -4532,7 +4561,7 @@ var LocalTab = (function () {
       });
       beats.forEach(function (b) { b.stem = stemAt(b.x); if (b.stem) stemLens.push(b.stem.len); });
       if (!restG) restG = findRests();
-      restG.forEach(function (cx) { if (cx > L0 + sp * 0.5 && cx < R0 - sp * 0.3) beats.push({ x: cx, n: [], rest: true }); });
+      restG.forEach(function (r) { if (r.x > L0 + sp * 0.5 && r.x < R0 - sp * 0.3) beats.push({ x: r.x, n: [], rest: true, rh: r.h }); });
       beats.sort(function (p, q) { return p.x - q.x; });
       outBars.push({ L: L0, R: R0, ts: curTs, beats: beats });
     }
@@ -4570,11 +4599,12 @@ var LocalTab = (function () {
         else { // share the missing time between the rests by their spacing, on a 16th grid
           var wsum = 0, ws = bar.beats.map(function (b, j) { if (!b.rest) return 0; var nx = j < bar.beats.length - 1 ? bar.beats[j + 1].x : bar.R; var w = Math.max(sp, nx - b.x); wsum += w; return w; });
           var total = Math.round(miss * 4), idx = [], want = [];
-          bar.beats.forEach(function (b, j) { if (b.rest) { idx.push(j); want.push(ws[j] / wsum * total); } });
+          var typed = [];
+          bar.beats.forEach(function (b, j) { if (b.rest) { idx.push(j); want.push(ws[j] / wsum * total); typed.push(b.rh >= 2.05 ? 4 : b.rh >= 1.1 ? 2 : 0); } }); // a tall zigzag is a quarter rest, a short hook an eighth
           // rests come in standard lengths: pick the combination closest to the spacing that fills the bar
           var STD = [1, 2, 3, 4, 6, 8, 12, 16], bestC = null, bestE = 1e9;
           (function pick(k, acc, rem) {
-            if (k === idx.length) { if (rem === 0) { var e = 0; acc.forEach(function (u, m) { e += Math.pow(u - want[m], 2); }); if (e < bestE) { bestE = e; bestC = acc.slice(); } } return; }
+            if (k === idx.length) { if (rem === 0) { var e = 0; acc.forEach(function (u, m) { e += Math.pow(u - want[m], 2) + (typed[m] && u !== typed[m] ? 6 : 0); }); if (e < bestE) { bestE = e; bestC = acc.slice(); } } return; }
             if (idx.length > 4) return;
             STD.forEach(function (u) { if (u <= rem) { acc.push(u); pick(k + 1, acc, rem - u); acc.pop(); } });
           })(0, [], total);
