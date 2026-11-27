@@ -4581,27 +4581,39 @@ var LocalTab = (function () {
       flush();
       /* a big X (muted note) with its stem running up through its middle: the stem splits it into two halves that
          read as nothing. Look for the four arms of an X around each stem crossing this line */
-      if (!OFF.xstem && UP) {
-        var lyX = function (xx) { return lineY(i, xx); };
-        var arms = function (xc) {
-          var ly = lyX(xc), ok = 0, n = 0;
+      if (!OFF.xstem) {
+        var lyX = function (xx) { return lineY(i, xx); }, armDiag = null;
+        var arms = function (xc, hw, dyc) {
+          var ly = lyX(xc) + (dyc || 0), ok = 0, n = 0, hx = Math.min(hw || sp * 0.45, sp * 0.6), hy = Math.min(sp * 0.42, hx * 1.25);
           [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(function (dd) {
             var hit = 0, tot = 0;
-            for (var f = 0.18; f <= 0.43; f += 0.05) { tot++; var px = Math.round(xc + dd[0] * f * sp), py = Math.round(ly + dd[1] * f * sp); if (dark(px, py) || dark(px + 1, py) || dark(px - 1, py)) hit++; }
+            // along the arm, scaled to this X's own width (some fonts draw it narrow and tall)
+            for (var f = 0.3; f <= 0.81; f += 0.085) { tot++; var px = Math.round(xc + dd[0] * f * hx), py = Math.round(ly + dd[1] * f * hy); if (dark(px, py) || dark(px + 1, py) || dark(px - 1, py)) hit++; }
             n++; if (hit >= tot * 0.8) ok++;
           });
+          armDiag = [xc, ok, Math.round(ly), +hx.toFixed(1), +hy.toFixed(1)];
           if (ok < 4) return false;
           // not a number: the middle of each side (left/right of centre, on the line's band) is open
           var open = 0; [-1, 1].forEach(function (sd) { var px = Math.round(xc + sd * sp * 0.4); if (!dark(px, Math.round(ly - sp * 0.12)) && !dark(px, Math.round(ly + sp * 0.12)) || !dark(px, Math.round(ly - sp * 0.3))) open++; });
-          return open >= 1;
+          armDiag.push('open', open);
+          if (open < 1) return false;
+          if (UP) return true; // (a stem runs up the middle)
+          // no stem: the V above and below the crossing is open in the middle, and so are the sides at the crossing
+          var vy = Math.max(sp * 0.3, hy * 0.85), lightAt = function (yy) { return !dark(xc, yy) || !dark(xc - 1, yy) || !dark(xc + 1, yy); };
+          var vOpen = lightAt(Math.round(ly - vy)) && lightAt(Math.round(ly + vy));
+          var sOpen = !dark(Math.round(xc - sp * 0.32), ly) && !dark(Math.round(xc + sp * 0.32), ly) || isLineRow(Math.round(xc - sp * 0.32), ly) && isLineRow(Math.round(xc + sp * 0.32), ly);
+          armDiag.push('v', vOpen, 's', sOpen);
+          return vOpen && sOpen;
         };
         // candidates: the gap between two too-tall halves, or a too-tall run on its own
         var cands = [];
-        tallRuns.forEach(function (r, k) { var nx = tallRuns[k + 1]; if (nx && nx[0] - r[1] <= sp * 0.35) cands.push((r[1] + nx[0]) / 2); else if (!(k && r[0] - tallRuns[k - 1][1] <= sp * 0.35)) cands.push((r[0] + r[1]) / 2); });
-        cands.forEach(function (xc) {
+        tallRuns.forEach(function (r, k) { var nx = tallRuns[k + 1]; if (nx && nx[0] - r[1] <= sp * 0.35) cands.push([(r[1] + nx[0]) / 2, (nx[1] - r[0] + 1) / 2]); else if (!(k && r[0] - tallRuns[k - 1][1] <= sp * 0.35)) cands.push([(r[0] + r[1]) / 2, (r[1] - r[0] + 1) / 2]); });
+        cands.forEach(function (cd) {
+          var xc = cd[0], hw = cd[1];
+          if (hw < sp * 0.2 || hw > sp * 0.7) return;
           if (notes.some(function (n) { return n.s === i + 1 && Math.abs(n.x - xc) < sp * 0.6; })) return;
-          var hit = false; for (var dx = -2; dx <= 2 && !hit; dx++) if (arms(Math.round(xc + dx))) hit = true;
-          if (opt.dbgRun) opt.dbgRun.push([i, Math.round(xc), 'xcand', hit]);
+          var hit = false, dyMax = Math.round(sp * 0.3); for (var dx = -2; dx <= 2 && !hit; dx++) for (var dyc = -dyMax; dyc <= dyMax && !hit; dyc++) if (arms(Math.round(xc + dx), hw, dyc)) hit = true; // the crossing can sit a little off the traced line
+          if (opt.dbgRun) opt.dbgRun.push([i, Math.round(xc), 'xcand', hit, armDiag]);
           if (hit) { glyphs++; notes.push({ s: i + 1, x: xc, dead: true, fret: 0, unsure: false }); }
         });
       }
