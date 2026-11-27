@@ -1518,16 +1518,22 @@ function SynthCore() {
       /* a real pick pulls the string into a triangle (apex where it is picked) and lets go: that shape — not a
          burst of hiss — is what starts the string. The pickup hears the string's velocity, i.e. the slope of that
          triangle: a two-level step whose harmonics fall 6 dB per octave with notches set by the picking point.
-         Mostly that, a little noise left for pick grit; the brightness smoothing still applies so soft/dark
-         picking stays soft. (CCRMA: "plucks are more than short bursts of white-noise") */
+         Mixed with pick grit (noise kept below ~2.5 kHz: grit spread over the top octaves reads as static);
+         the brightness smoothing still applies so soft/dark picking stays soft. (CCRMA: "plucks are more than short bursts of white-noise") */
+      var XP = (typeof window !== 'undefined' && window.__xp) || {};
+      var lpHz = XP.lp != null ? XP.lp : 2500; // pick grit lives low: unfiltered noise fills the top octaves and reads as static
+      if (lpHz) { // circular 2-pole lowpass on the noise part (two passes so the period wraps cleanly)
+        var cl = Math.exp(-2 * Math.PI * lpHz / fs), s1 = 0, s2 = 0;
+        for (var pass = 0; pass < 2; pass++) for (i = 0; i < L; i++) { s1 = s1 * cl + shaped[i] * (1 - cl); s2 = s2 * cl + s1 * (1 - cl); if (pass) shaped[i] = s2; }
+      }
       var nPk = 1e-6; for (i = 0; i < L; i++) nPk = Math.max(nPk, Math.abs(shaped[i]));
       var tri = new Float32Array(L), ty = 0, tmean = 0;
-      for (i = 0; i < L; i++) { var tv = i < m ? 1 / m : -1 / Math.max(1, L - m); ty = ty * cA * 0.2 + tv * (1 - cA * 0.2); tri[i] = ty; tmean += ty; }
+      for (i = 0; i < L; i++) { var tv = i < m ? 1 / m : -1 / Math.max(1, L - m); var smk = XP.sm != null ? XP.sm : 0.2; ty = ty * cA * smk + tv * (1 - cA * smk); tri[i] = ty; tmean += ty; }
       tmean /= L; var tPk = 1e-6; for (i = 0; i < L; i++) { tri[i] -= tmean; tPk = Math.max(tPk, Math.abs(tri[i])); }
-      var grit = 0.74;
+      var grit = XP.grit != null ? XP.grit : 0.9;
       for (i = 0; i < L; i++) shaped[i] = (1 - grit) * tri[i] / tPk + grit * shaped[i] / nPk;
       var peak = 1e-6; for (i = 0; i < L; i++) peak = Math.max(peak, Math.abs(shaped[i]));
-      var g = amp / peak * 0.83; // same loudness as the old noise pluck, so preset levels stay put
+      var g = amp / peak * (XP.gf || 0.83); // same loudness as the old noise pluck, so preset levels stay put
       for (i = 0; i < L; i++) {
         var win = i < 4 ? i / 4 : (i > L - 5 ? (L - 1 - i) / 4 : 1);
         shaped[i] *= g * win;
