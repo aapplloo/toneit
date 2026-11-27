@@ -3494,6 +3494,62 @@ var PhotoTab = (function () {
     for (var a2 = best - 0.2; a2 <= best + 0.2001; a2 += 0.05) { var s2 = score(a2); if (s2 > bestS) { bestS = s2; best = a2; } }
     return best;
   }
+  /* a sheet photographed at a slant (and not found as a whole sheet, e.g. its edges cut off) has staff lines that
+     fan out: tilted one way near the top, the other way near the bottom. Measure the tilt in horizontal bands,
+     fit it as a straight function of height, and shear each row back to level. */
+  function bandSkew(B, nb) {
+    var w = B.w, h = B.h, minRun = Math.max(8, Math.round(w / 60)), rows = [], y, x;
+    for (y = 0; y < h; y++) {
+      var r = [], run = 0;
+      for (x = 0; x <= w; x++) { if (x < w && B.b[y * w + x]) { run++; continue; } if (run >= minRun && run < w * 0.9) for (var xr = x - run; xr < x; xr += 2) r.push(xr - w / 2); run = 0; }
+      rows.push(r);
+    }
+    var out = [];
+    for (var k = 0; k < nb; k++) {
+      var ya = Math.max(0, Math.floor((k - 0.5) * h / nb)), yb = Math.min(h, Math.floor((k + 1.5) * h / nb)), n = 0;
+      for (y = ya; y < yb; y++) n += rows[y].length;
+      if (n < 300) continue;
+      var score = function (a) {
+        var t = Math.tan(a * Math.PI / 180), P = new Float64Array(yb - ya + w), off = w / 2, sc = 0;
+        for (var yy = ya; yy < yb; yy++) { var rr = rows[yy]; for (var i = 0; i < rr.length; i++) { var q = Math.round(yy - ya + rr[i] * t + off); if (q >= 0 && q < P.length) P[q]++; } }
+        for (var j = 0; j < P.length; j++) sc += P[j] * P[j];
+        return sc;
+      };
+      var best = 0, bs = -1;
+      for (var a = -4; a <= 4.001; a += 0.2) { var v = score(a); if (v > bs) { bs = v; best = a; } }
+      for (var a2 = best - 0.15; a2 <= best + 0.1501; a2 += 0.025) { var v2 = score(a2); if (v2 > bs) { bs = v2; best = a2; } }
+      out.push({ y: (ya + yb) / 2, a: best, w: n });
+    }
+    return out;
+  }
+  function fitTilt(bands) {
+    if (bands.length < 4) return null;
+    var use = bands.slice(), c0 = 0, c1 = 0;
+    for (var it = 0; it < 2; it++) {
+      var sw = 0, sy = 0, sa = 0, syy = 0, sya = 0;
+      use.forEach(function (b) { sw += b.w; sy += b.w * b.y; sa += b.w * b.a; syy += b.w * b.y * b.y; sya += b.w * b.y * b.a; });
+      var my = sy / sw, ma = sa / sw, vy = syy / sw - my * my;
+      c1 = vy > 1e-9 ? (sya / sw - my * ma) / vy : 0; c0 = ma - c1 * my;
+      use = bands.filter(function (b) { return Math.abs(b.a - (c0 + c1 * b.y)) < 0.35; });
+      if (use.length < 4) return null;
+    }
+    var ys = use.map(function (b) { return b.y; });
+    return { c0: c0, c1: c1, y0: Math.min.apply(null, ys), y1: Math.max.apply(null, ys) };
+  }
+  function shearRows(c, fit, sc) {
+    var W = c.width, H = c.height, src = c.getContext('2d').getImageData(0, 0, W, H).data, o = document.createElement('canvas');
+    o.width = W; o.height = H; var ox = o.getContext('2d'), im = ox.createImageData(W, H), d = im.data;
+    for (var y = 0; y < H; y++) {
+      var t = Math.tan((fit.c0 + fit.c1 * Math.max(fit.y0, Math.min(fit.y1, y / sc))) * Math.PI / 180); // no guessing beyond the measured lines
+      for (var x = 0; x < W; x++) {
+        var fy = y - (x - W / 2) * t, iy = Math.floor(fy), ay = fy - iy, v = 255;
+        if (iy >= 0 && iy < H - 1) { var j0 = (iy * W + x) * 4, j1 = j0 + W * 4; v = src[j0] * (1 - ay) + src[j1] * ay; }
+        var j = (y * W + x) * 4; d[j] = d[j + 1] = d[j + 2] = v; d[j + 3] = 255;
+      }
+    }
+    ox.putImageData(im, 0, 0);
+    return o;
+  }
   // staff lines: rows mostly covered by long horizontal runs
   function lineRows(B) {
     var w = B.w, h = B.h, minRun = Math.max(6, Math.round(w / 80)), cov = new Float32Array(h), ext = [];
@@ -3608,7 +3664,7 @@ var PhotoTab = (function () {
   }
   // where the six lines really run: walk out from the middle while lines (not a solid dark border) continue
   function extentStraight(G, s) {
-    var W = G.w, H = G.h, g = G.g, TH = 150, sp = s.sp;
+    var W = G.w, H = G.h, g = G.g, TH = G.th || 150, sp = s.sp;
     function dk(x, y) { y = Math.round(y); return x >= 0 && x < W && y >= 0 && y < H && g[y * W + x] < TH; }
     function lineAt(x) {
       var on = 0, gaps = 0;
@@ -3622,7 +3678,7 @@ var PhotoTab = (function () {
     for (x = mid, miss = 0; x < W - 1; x++) { v = lineAt(x); if (v < 0) break; if (v >= 4) { miss = 0; s.x1 = x; } else if (++miss > maxGap) break; }
   }
   function extentTracked(G, s) {
-    var W = G.w, H = G.h, g = G.g, TH = 150, sp = s.sp;
+    var W = G.w, H = G.h, g = G.g, TH = G.th || 150, sp = s.sp;
     function dk(x, y) { y = Math.round(y); return x >= 0 && x < W && y >= 0 && y < H && g[y * W + x] < TH; }
     // the staff may drift up or down a little along a photo: follow it
     var cur = 0;
@@ -3645,6 +3701,24 @@ var PhotoTab = (function () {
     cur = start;
     for (x = mid, miss = 0; x < W - 1; x++) { v = lineAt(x); if (v < 0) break; if (v >= 4) { miss = 0; s.x1 = x; } else if (++miss > maxGap) break; }
   }
+  /* what counts as ink on this page: a light scan or a soft photo prints thin staff lines in mid-grey, so the cut
+     between ink and paper is set halfway from how dark the staff lines actually are to the paper */
+  function inkThreshold(G, staves) {
+    var W = G.w, H = G.h, g = G.g, v = [], pap = [];
+    staves.forEach(function (s) {
+      var xa = Math.round(s.x0 + (s.x1 - s.x0) * 0.15), xb = Math.round(s.x0 + (s.x1 - s.x0) * 0.85);
+      for (var i = 0; i < 6; i++) {
+        var y = Math.round(s.top + i * s.sp);
+        for (var x = xa; x < xb; x += 3) { var m = 255; for (var dy = -2; dy <= 2; dy++) { var yy = y + dy; if (yy >= 0 && yy < H) m = Math.min(m, g[yy * W + x]); } v.push(m); }
+        if (i < 5) { var ym = Math.round(s.top + (i + 0.5) * s.sp); for (x = xa; x < xb; x += 7) if (ym < H) pap.push(g[ym * W + x]); }
+      }
+    });
+    if (v.length < 50) return 150;
+    v.sort(function (a, b) { return a - b; }); pap.sort(function (a, b) { return a - b; });
+    var line = v[Math.floor(v.length * 0.3)], paper = pap.length ? pap[Math.floor(pap.length * 0.7)] : 245;
+    if (line < 110) return 150; // dark, crisp lines: the usual cut works best
+    return Math.max(150, Math.min(215, Math.round(line + (paper - line) * 0.6)));
+  }
   // the straight walk is exact on flat pages; if it stops far too early (a tilted or curved photo), follow the lines instead
   function refineExtent(G, s) {
     var a = { top: s.top, sp: s.sp, x0: s.x0, x1: s.x1 }, b = { top: s.top, sp: s.sp, x0: s.x0, x1: s.x1 };
@@ -3662,7 +3736,17 @@ var PhotoTab = (function () {
       if (page) { img = flatten(img, page, 600 / Math.max(600, img.width)); small = canvasOf(img, 900, 0); }
       var deg = variant === 1 ? 0 : skewAngle(binarize(grayOf(small), 12, off));
       var big = canvasOf(img, 2400, deg);
-      var mid = canvasOf(big, 1400, 0), sc = big.width / mid.width, B = binarize(grayOf(mid), 14, off), st = findStaves(B);
+      var mid = canvasOf(big, 1400, 0), sc = big.width / mid.width, B = binarize(grayOf(mid), 14, off);
+      var fit = null;
+      if (variant !== 1) { // level lines that still lean or fan out after the overall straightening
+        fit = fitTilt(bandSkew(B, 12)); var H2 = mid.height;
+        if (fit && Math.abs(fit.c1 * H2) > 3) fit = null; // not a believable slant
+        if (fit) fit.span = [+fit.c0.toFixed(3), +(fit.c0 + fit.c1 * H2).toFixed(3)];
+        if (fit && Math.max(Math.abs(fit.c0), Math.abs(fit.c0 + fit.c1 * H2)) > 0.06) {
+          fit.used = true; big = shearRows(big, fit, sc); mid = canvasOf(big, 1400, 0); B = binarize(grayOf(mid), 14, off);
+        }
+      }
+      var st = findStaves(B);
       // small staves (a phone screenshot, a far-away photo): enlarge the page so lines are ~24 px apart — digit
       // shapes and stem/beam thresholds work best there; pages that are already big enough stay as they are
       var sps = st.map(function (s) { return s.sp * sc; }).sort(function (a, b) { return a - b; }), spMed = sps.length ? sps[sps.length >> 1] : 0;
@@ -3671,8 +3755,9 @@ var PhotoTab = (function () {
       }
       st = st.map(function (s) { return { top: s.top * sc, bot: s.bot * sc, sp: s.sp * sc, x0: s.x0 * sc, x1: s.x1 * sc, notTop: s.notTop != null ? s.notTop * sc : null }; });
       var gray = enhance(big);
+      gray.th = inkThreshold(gray, st);
       st.forEach(function (s) { refineExtent(gray, s); });
-      return { canvas: big, gray: gray, staves: st, deg: deg, page: !!page };
+      return { canvas: big, gray: gray, staves: st, deg: deg, page: !!page, th: gray.th, fit: fit || null };
     });
   }
 
@@ -4529,7 +4614,7 @@ var LocalTab = (function () {
   /* ---------- page ---------- */
   // staves joined by a vertical line at their left end belong to one system
   function systemsOf(G, staves) {
-    var W = G.w, g = G.g, TH = 150, out = [], cur = [];
+    var W = G.w, g = G.g, TH = G.th || 150, out = [], cur = [];
     staves.forEach(function (s, i) {
       if (!i) { cur = [s]; return; }
       var p = staves[i - 1], joined = false, xa = Math.round(Math.min(p.x0, s.x0) - p.sp * 1.5), xb = Math.round(Math.min(p.x0, s.x0) + p.sp * 1.2);
@@ -4788,6 +4873,31 @@ var Seq = (function () {
       r.dur = Math.max(r.dur, tau + dur);
       display.push({ t: tRel, d: dur, s: s, fret: n.fret, n: n, vid: v.id });
     });
+    /* sympathetic strings (Laurson et al., "Methods for Modeling Realistic Playing in Acoustic Guitar Synthesis",
+       2001): an open string that nobody is touching picks up energy through the bridge when a note shares its
+       pitch class or its fifth, and rings softly under it. Only free strings, only clearly sounding notes. */
+    if (human) {
+      var tun = song.tuning || [64, 59, 55, 50, 45, 40], plucks = voices.filter(function (v) { return !v.scrapeOnly; }).sort(function (a, b) { return a.t0 - b.t0; });
+      var busy = {}; plucks.forEach(function (v) { (busy[v.s] = busy[v.s] || []).push(v); });
+      var lastSym = {};
+      plucks.forEach(function (v) {
+        var r = v.r, base = r.pts.length ? r.pts[0][1] : 0;
+        if (r.pm || r.dead || r.harm || r.vel < 0.55 || r.dur < 0.25 || !base) return;
+        for (var o = 1; o <= 6; o++) {
+          if (o === v.s) continue;
+          var O = tun[o - 1], iv = (((Math.round(base) - O) % 12) + 12) % 12, lvl = iv === 0 ? 0.045 : iv === 7 ? 0.028 : 0;
+          if (!lvl || (lastSym[o] != null && v.t0 - lastSym[o] < 0.8)) continue;
+          // the string must be free: nothing of its own ringing now or starting very soon
+          var free = (busy[o] || []).every(function (w) { return w.t0 > v.t0 + 0.35 || w.t0 + w.r.dur < v.t0 - 0.05; });
+          if (!free) continue;
+          lastSym[o] = v.t0;
+          var amp = Math.round(lvl * (r.vel / 0.85) / 0.005) * 0.005;
+          voices.push({ id: vid++, s: o, t0: v.t0 + 0.012, notes: [], sym: true, r: {
+            s: o, open: O, dur: Math.min(1.6, r.dur + 0.3), pts: [[0, O, 0]], lenPts: [[0, O, 0]], vib: [], pm: false, dead: false, harm: false,
+            vel: amp, exc: [[0, amp, 0.22, -1, 1]], seed: o * 31 } });
+        }
+      });
+    }
     // a string can only sound one note: re-plucks cut the previous voice
     var byS = {};
     voices.sort(function (a, b) { return a.t0 - b.t0; });
