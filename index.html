@@ -4286,7 +4286,8 @@ var LocalTab = (function () {
           for (xx = a0 - 1; xx <= b0 + 1; xx++) { if (cont(xx, lyc - sp * 0.78, lyc - sp * 0.3) && dark(xx, edge)) { thick++; if (thick > bestThick) bestThick = thick; } else thick = 0; }
           // ink running up into the next line's zone: a tall glyph (clef, time signature, rest) — unless a number was
           // just read right above on the previous line, i.e. two digits of a chord touching in a blurry photo
-          var stacked = cutA[1] < (b0 - a0 + 1) * 0.5 && notes.some(function (n) { return n.s === i && Math.abs(n.x - (a0 + b0) / 2) < sp * 0.5; });
+          // (never right at the start of the staff: that is where the clef and the time signature stand)
+          var stacked = a0 > X0 + sp * 5.5 && cutA[1] < (b0 - a0 + 1) * 0.5 && notes.some(function (n) { return n.s === i && Math.abs(n.x - (a0 + b0) / 2) < sp * 0.5; });
           if (bestThick >= Math.max(3, sp * 0.18) && !stacked) { over.push({ a: a0, b: b0, line: i }); return; }
         }
         var ya3 = 1e9, yb3 = -1, yTopC = Math.max(lyc - hb, cutA[0] + 1), yBotC = Math.min(lyc + hb, cutB[0] - 1);
@@ -4452,6 +4453,23 @@ var LocalTab = (function () {
       if (opt.dbgTs) opt.dbgTs.push({ bi: bi, bx: bx, gs: gs, gI: gI, up: up, dn: dn });
     });
 
+    // the TAB clef at the start of every system: three big letters stacked over the staff. Its letters are taller
+    // than any fret number (long unbroken vertical strokes in the top and bottom thirds); everything up to the first
+    // clear gap after them is clef, not notes or rests
+    (function findClef() {
+      var xs0 = Math.round(barX[0] + sp * 0.2), xe = Math.round(barX[0] + sp * 3.2), tallTop = false, tallBot = false, last = -1, started = false, gapRun = 0;
+      function vrun(xq, ya5, yb5) { var run = 0, best = 0; for (var yq = Math.round(ya5); yq <= Math.round(yb5); yq++) { if (dark(xq, yq)) { run++; if (run > best) best = run; } else run = 0; } return best; }
+      function offLineInk(xq) { var c = 0; for (var yq = lineY(0, xq) - 1; yq <= lineY(5, xq) + 1; yq++) { var onL = false; for (var li = 0; li < 6; li++) if (Math.abs(yq - lineY(li, xq)) <= tt) onL = true; if (!onL && dark(xq, yq)) c++; } return c; }
+      for (var xq = xs0; xq <= xe; xq++) {
+        var ink = offLineInk(xq);
+        if (ink) {
+          started = true; last = xq; gapRun = 0;
+          if (vrun(xq, lineY(0, xq) - sp * 0.3, lineY(2, xq)) >= sp * 1.15) tallTop = true;
+          if (vrun(xq, lineY(3, xq), lineY(5, xq) + sp * 0.3) >= sp * 1.15) tallBot = true;
+        } else if (started && ++gapRun >= Math.max(2, sp * 0.22)) break;
+      }
+      if (tallTop && tallBot && last > 0 && last - xs0 < sp * 2.6) clefX = Math.max(clefX, last);
+    })();
     var usedG = [];
     barX.forEach(function (bx, bi) { // clef / time-signature groups are not rests
       var gs = overG.filter(function (o) { return o.a > bx && o.a < bx + sp * 6; });
@@ -4482,12 +4500,13 @@ var LocalTab = (function () {
           // its height: a rest is taller than a number
           var top5 = 1e9, bot5 = -1;
           for (var xx5 = a5; xx5 <= x2; xx5++) for (y2 = lineY(0, xx5); y2 <= lineY(5, xx5); y2++) { var on2 = false; for (var li2 = 0; li2 < 6; li2++) if (Math.abs(y2 - lineY(li2, xx5)) <= tt) on2 = true; if (!on2 && dark(xx5, y2)) { if (y2 < top5) top5 = y2; if (y2 > bot5) bot5 = y2; } }
-          if (bot5 - top5 >= sp * 0.9) out.push({ x: (a5 + x2) / 2, h: (bot5 - top5) / sp });
+          if (bot5 - top5 >= sp * 0.9 && bot5 - top5 <= sp * 3.0) out.push({ x: (a5 + x2) / 2, h: (bot5 - top5) / sp }); // taller than any rest: the TAB clef
         }
       }
       // one rest can fall apart into two blobs (the zigzag of a quarter rest): join close neighbours
       var mg = [];
       out.forEach(function (r) { var l = mg[mg.length - 1]; if (l && r.x - l.x < sp * 0.9) { l.x = (l.x + r.x) / 2; l.h = Math.max(l.h, r.h); } else mg.push({ x: r.x, h: r.h }); });
+      if (opt.dbgRests) opt.dbgRests.push(mg.map(function (r) { return [Math.round(r.x), +r.h.toFixed(2)]; }), out.map(function (r) { return [Math.round(r.x), +r.h.toFixed(2)]; }));
       return mg;
     }
 
@@ -4600,7 +4619,7 @@ var LocalTab = (function () {
           var wsum = 0, ws = bar.beats.map(function (b, j) { if (!b.rest) return 0; var nx = j < bar.beats.length - 1 ? bar.beats[j + 1].x : bar.R; var w = Math.max(sp, nx - b.x); wsum += w; return w; });
           var total = Math.round(miss * 4), idx = [], want = [];
           var typed = [];
-          bar.beats.forEach(function (b, j) { if (b.rest) { idx.push(j); want.push(ws[j] / wsum * total); typed.push(b.rh >= 2.05 ? 4 : b.rh >= 1.1 ? 2 : 0); } }); // a tall zigzag is a quarter rest, a short hook an eighth
+          bar.beats.forEach(function (b, j) { if (b.rest) { idx.push(j); want.push(ws[j] / wsum * total); typed.push(b.rh >= 1.45 ? 4 : b.rh >= 0.8 ? 2 : 0); } }); // a tall zigzag (~1.7 lines) is a quarter rest, a short hook (~1 line) an eighth
           // rests come in standard lengths: pick the combination closest to the spacing that fills the bar
           var STD = [1, 2, 3, 4, 6, 8, 12, 16], bestC = null, bestE = 1e9;
           (function pick(k, acc, rem) {
