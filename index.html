@@ -911,10 +911,9 @@ var DSP = (function () {
     var k = drive, b = bias || 0;
     var o = Math.tanh(k * b), s = Math.tanh(k * (1 + b)) - o, sn = o - Math.tanh(k * (-1 + b));
     return curve(function (x) {
-      var y = Math.tanh(k * (x + b)) - o;
-      // grid conduction clips positive half harder
-      if (y > 0) y = y / s; else y = y / sn * 0.92;
-      return y;
+      // one scale for both halves: the curve stays smooth through zero, so soft playing stays clean (a kink here
+      // put ~10% distortion on every note at any level). The bias still makes the positive half clip sooner.
+      return (Math.tanh(k * (x + b)) - o) / Math.max(s, sn);
     });
   }
   // Push-pull power stage: symmetric, softer knee
@@ -1058,7 +1057,7 @@ var MODELS = (function () {
         { drive: 1.7, bias: 0.10, hp: 25, lp: 16000 },
         { pre: 3.2, drive: 2.2, bias: 0.18, hp: 35, lp: 10500 }
       ], stackAfter: 2, pwr: { drive: [0.5, 3.2], hard: 0.15 }, presence: { f: 3500, max: 7 }, depth: null,
-      trim: 1.023, knobs: ['gain', 'bass', 'mid', 'treble', 'presence', 'master', 'level'],
+      lvl: [15.3, 7.5, 3.0], trim: 1.023, knobs: ['gain', 'bass', 'mid', 'treble', 'presence', 'master', 'level'],
       note: '톤스택 R 250k/1M/25k/56k, C 250pF/20nF/20nF. 톤스택이 두 번째 게인단 뒤에 있어 브레이크업이 따뜻함.'
     },
     twin: {
@@ -1068,7 +1067,7 @@ var MODELS = (function () {
         { fixed: 1.6, drive: 1.4, bias: 0.08, hp: 20, lp: 18000 },
         { pre: 2.0, drive: 1.5, bias: 0.12, hp: 25, lp: 13000 }
       ], stackAfter: 1, pwr: { drive: [0.35, 2.2], hard: 0.05 }, presence: null, bright: { f: 2400, db: 6 },
-      trim: 1.688, knobs: ['gain', 'bass', 'mid', 'treble', 'bright', 'master', 'level'],
+      lvl: [21.7, 20.3, 15.3], trim: 1.688, knobs: ['gain', 'bass', 'mid', 'treble', 'bright', 'master', 'level'],
       note: '톤스택 250k/250k/10k/100k, 250pF/0.1µF/0.047µF. 톤스택이 첫 단 바로 뒤라 깊은 미드 스쿱 + 클린.'
     },
     ac30: {
@@ -1078,7 +1077,7 @@ var MODELS = (function () {
         { drive: 1.8, bias: 0.10, hp: 30, lp: 15000 },
         { pre: 3.0, drive: 2.4, bias: 0.22, hp: 45, lp: 9500 }
       ], stackAfter: 2, pwr: { drive: [0.7, 4.0], hard: 0.45 }, cut: { min: 1600, max: 18000 },
-      trim: 1.446, knobs: ['gain', 'bass', 'treble', 'cut', 'master', 'level'],
+      lvl: [16.8, 8.8, 3.6], trim: 1.446, knobs: ['gain', 'bass', 'treble', 'cut', 'master', 'level'],
       note: '톤 회로: 트레블/베이스 1M, 50pF, 22nF×2, 슬로프 100k, 미드 없음(접지). EL84 + 컷 컨트롤의 차임.'
     },
     plexi: {
@@ -1088,7 +1087,7 @@ var MODELS = (function () {
         { drive: 2.0, bias: 0.15, hp: 85, lp: 15000, bright: { f: 1800, db: 5 } },
         { pre: 4.0, drive: 2.6, bias: 0.25, hp: 40, lp: 9000 }
       ], stackAfter: 2, pwr: { drive: [0.6, 4.5], hard: 0.5 }, presence: { f: 4000, max: 8 },
-      trim: 0.896, knobs: ['gain', 'bass', 'mid', 'treble', 'presence', 'master', 'level'],
+      lvl: [8.3, 3.4, 1.9], trim: 0.896, knobs: ['gain', 'bass', 'mid', 'treble', 'presence', 'master', 'level'],
       note: '톤스택 220k/1M/25k/33k, 500pF/22nF/22nF. 브라이트 캡 + EL34의 미드 크런치.'
     },
     jcm800: {
@@ -1099,7 +1098,7 @@ var MODELS = (function () {
         { drive: 2.8, bias: 0.45, hp: 150, lp: 8500, bright: { f: 2200, db: 4 } },
         { pre: 3.2, drive: 2.6, bias: 0.25, hp: 60, lp: 7200 }
       ], stackAfter: 3, pwr: { drive: [0.6, 4.0], hard: 0.55 }, presence: { f: 4200, max: 8 },
-      trim: 0.814, knobs: ['gain', 'bass', 'mid', 'treble', 'presence', 'master', 'level'],
+      lvl: [9.9, 3.8, 2.3], trim: 0.814, knobs: ['gain', 'bass', 'mid', 'treble', 'presence', 'master', 'level'],
       note: '톤스택 220k/1M/22k/33k, 470pF/22nF/22nF. 콜드 바이어스 클리퍼 단이 만드는 80년대 록 게인.'
     },
     slo: {
@@ -1111,7 +1110,7 @@ var MODELS = (function () {
         { pre: 4.0, drive: 3.0, bias: 0.35, hp: 160, lp: 7000 },
         { pre: 2.5, drive: 2.5, bias: 0.25, hp: 100, lp: 6500 }
       ], stackAfter: 4, pwr: { drive: [0.6, 3.5], hard: 0.35 }, presence: { f: 4200, max: 8 }, depth: { f: 90, max: 7 },
-      trim: 0.834, knobs: ['gain', 'bass', 'mid', 'treble', 'presence', 'depth', 'master', 'level'],
+      lvl: [3.6, 2.5, 2.0], trim: 0.834, knobs: ['gain', 'bass', 'mid', 'treble', 'presence', 'depth', 'master', 'level'],
       note: '톤스택 250k/1M/25k/47k, 470pF/20nF/20nF. 4단 캐스케이드 게인의 하이게인 리드.'
     },
     princeton: {
@@ -1121,7 +1120,7 @@ var MODELS = (function () {
         { fixed: 1.6, drive: 1.5, bias: 0.08, hp: 20, lp: 17000 },
         { pre: 2.4, drive: 1.9, bias: 0.15, hp: 30, lp: 11000 }
       ], stackAfter: 1, pwr: { drive: [0.45, 3.2], hard: 0.2 }, presence: null,
-      trim: 1.062, knobs: ['gain', 'bass', 'treble', 'master', 'level'],
+      lvl: [21.9, 16.5, 8.1], trim: 1.062, knobs: ['gain', 'bass', 'treble', 'master', 'level'],
       note: '톤스택 250k/250k/4.8k(고정)/100k, 250pF/0.1µF/0.047µF. 작은 6V6 출력단이 일찍 부드럽게 깨짐.'
     },
     jc120: {
@@ -1130,7 +1129,7 @@ var MODELS = (function () {
       gain: [-22, 8], stages: [
         { fixed: 1.2, drive: 0.6, bias: 0.0, hp: 25, lp: 18000 }
       ], stackAfter: 1, pwr: { drive: [0.3, 1.6], hard: 0.9 }, presence: null, bright: { f: 2600, db: 5 },
-      trim: 3.02, knobs: ['gain', 'bass', 'mid', 'treble', 'bright', 'master', 'level'],
+      lvl: [-0.4, -0.4, -0.4], trim: 3.02, knobs: ['gain', 'bass', 'mid', 'treble', 'bright', 'master', 'level'],
       note: '거의 왜곡 없는 트랜지스터 클린. 톤스택은 소형 솔리드스테이트 앰프 값(250k/250k/10k/41k, 240pF/33nF/82nF)으로 근사.'
     },
     jtm45: {
@@ -1140,7 +1139,7 @@ var MODELS = (function () {
         { drive: 1.5, bias: 0.08, hp: 30, lp: 12000, bright: { f: 1200, db: 2 } },
         { pre: 2.6, drive: 1.9, bias: 0.15, hp: 35, lp: 7500 }
       ], stackAfter: 2, pwr: { drive: [0.8, 4.6], hard: 0.12 }, presence: { f: 3200, max: 5 },
-      trim: 1.136, knobs: ['gain', 'bass', 'mid', 'treble', 'presence', 'master', 'level'],
+      lvl: [12.1, 5.6, 2.3], trim: 1.136, knobs: ['gain', 'bass', 'mid', 'treble', 'presence', 'master', 'level'],
       note: '톤스택 250k/1M/25k/33k, 270pF/22nF/22nF. 트위드 4×10 회로에서 나온 초기 영국 앰프, 정류관 새그의 부드러운 크런치.'
     },
     deville: {
@@ -1151,7 +1150,7 @@ var MODELS = (function () {
         { drive: 2.6, bias: 0.3, hp: 80, lp: 9000 },
         { pre: 2.6, drive: 2.2, bias: 0.2, hp: 60, lp: 8000 }
       ], stackAfter: 1, pwr: { drive: [0.5, 3.4], hard: 0.3 }, presence: { f: 4000, max: 7 },
-      trim: 0.9, knobs: ['gain', 'bass', 'mid', 'treble', 'presence', 'master', 'level'],
+      lvl: [18.7, 9.7, 3.9], trim: 0.9, knobs: ['gain', 'bass', 'mid', 'treble', 'presence', 'master', 'level'],
       note: '톤스택 250k/250k/25k/130k, 250pF/0.1µF/22nF. 미국식 스쿱 위에 캐스케이드 게인을 더한 드라이브 채널.'
     },
     mark: {
@@ -1163,7 +1162,7 @@ var MODELS = (function () {
         { pre: 3.5, drive: 3.0, bias: 0.3, hp: 140, lp: 7500 },
         { pre: 2.4, drive: 2.4, bias: 0.2, hp: 90, lp: 6800 }
       ], stackAfter: 1, pwr: { drive: [0.5, 3.0], hard: 0.3 }, presence: { f: 4500, max: 8 },
-      trim: 0.749, knobs: ['gain', 'bass', 'mid', 'treble', 'presence', 'master', 'level'],
+      lvl: [12.0, 4.8, 2.3], trim: 0.749, knobs: ['gain', 'bass', 'mid', 'treble', 'presence', 'master', 'level'],
       note: '톤스택 250k/250k/25k/100k, 250pF/0.1µF/0.047µF가 첫 단 바로 뒤. 이어지는 캐스케이드 리드 게인. EQ 블록을 V자로 걸면 유명한 그 소리.'
     },
     triple: {
@@ -1175,7 +1174,7 @@ var MODELS = (function () {
         { pre: 4.0, drive: 3.0, bias: 0.35, hp: 170, lp: 7200 },
         { pre: 2.5, drive: 2.5, bias: 0.25, hp: 100, lp: 6500 }
       ], stackAfter: 4, pwr: { drive: [0.6, 3.8], hard: 0.45 }, presence: { f: 4300, max: 8 }, depth: { f: 85, max: 8 },
-      trim: 0.869, knobs: ['gain', 'bass', 'mid', 'treble', 'presence', 'depth', 'master', 'level'],
+      lvl: [4.8, 3.1, 2.5], trim: 0.869, knobs: ['gain', 'bass', 'mid', 'treble', 'presence', 'depth', 'master', 'level'],
       note: '톤스택 250k/1M/33k/51k, 220pF/15nF/47nF. 타이트한 저음의 모던 하이게인.'
     }
   };
@@ -1747,6 +1746,12 @@ var Engine = (function () {
   }
 
   /* ---------------- Amp ---------------- */
+  var AMP_SENS = -20;
+  function lvlComp(c, g) {
+    if (!c) return 0;
+    g = g != null ? g : 5;
+    return g <= 5 ? c[0] + (c[1] - c[0]) * (g - 2) / 3 : c[1] + (c[2] - c[1]) * (g - 5) / 3;
+  }
   function buildAmp(def) {
     var inp = G(), out = G(), knob = G(1), stageNodes = [], ts = SwapIIR();
     var pwrIn = G(1), pwr = WS(DSP.powerCurve(1.6, def.pwr.hard)), presence = BQ('highshelf', def.presence ? def.presence.f : 4000, null, 0);
@@ -1775,7 +1780,10 @@ var Engine = (function () {
     return {
       input: inp, output: out,
       set: function (p, immediate) {
-        var gdb = knobDb(p.gain, def.gain[0], def.gain[1]);
+        // the voices reach the amp at a hot level; AMP_SENS lowers what the first stage sees so the gain knob goes
+        // from clean to crunch to lead instead of fuzz at every setting. lvl (measured per amp, dB at gain 2/5/8)
+        // keeps each amp as loud as it was, so presets and the backing-track balance don't move.
+        var gdb = knobDb(p.gain, def.gain[0], def.gain[1]) + (XA().goff != null ? XA().goff : AMP_SENS);
         setP(knob.gain, dB(gdb));
         stageNodes.forEach(function (s) { if (s.bright) setP(s.bright.gain, s.st.bright.db * (1 - p.gain / 10)); });
         if (bright) setP(bright.gain, p.bright ? def.bright.db * (1 - p.gain / 12) : 0);
@@ -1787,7 +1795,7 @@ var Engine = (function () {
         if (def.depth) setP(depth.gain, def.depth.max * ((p.depth != null ? p.depth : 5) / 10) - def.depth.max * 0.3);
         if (def.cut) setP(cut.frequency, def.cut.max * Math.pow(def.cut.min / def.cut.max, (p.cut != null ? p.cut : 4) / 10));
         var lvl = knobDb(p.level != null ? p.level : 5, -18, 12);
-        setP(trim.gain, def.trim * dB(lvl) / Math.pow(drive, 0.75));
+        setP(trim.gain, def.trim * dB(lvl + (XA().goff === 0 ? 0 : lvlComp(def.lvl, p.gain))) / Math.pow(drive, 0.75));
       },
       dispose: function () { try { inp.disconnect(); out.disconnect(); } catch (e) { } }
     };
@@ -2247,6 +2255,7 @@ var Engine = (function () {
 
   /* ---------------- Guitar electronics ---------------- */
   var guitar = { id: 'strat', pos: 'MN', tone: 10, vol: 10, strangle: false };
+  function XA() { return (typeof window !== 'undefined' && window.__xa) || {}; } // test overrides (render harness)
   function applyGuitar(immediate) {
     if (!ctx) return;
     var an = Synth.pickupAnalog(guitar.id, guitar.pos, guitar.tone / 10, guitar.strangle);
@@ -5482,24 +5491,24 @@ var Patch = (function () {
     return p;
   }
   var FACTORY = [
-    make('Brit Crunch', { amp: { model: 'plexi', p: { gain: 6.5, bass: 4.5, mid: 7, treble: 6.5, presence: 6, master: 6.5 } }, cab: { model: 'gb412', p: { mic: 3, dist: 2 } }, rev: { model: 'room', on: true, p: { mix: 2, decay: 4 } } }),
+    make('Brit Crunch', { amp: { model: 'plexi', p: { gain: 5.5, bass: 4.5, mid: 7, treble: 6.5, presence: 6, master: 6.5 } }, cab: { model: 'gb412', p: { mic: 3, dist: 2 } }, rev: { model: 'room', on: true, p: { mix: 2, decay: 4 } } }, -1.1),
     make('Blackface Clean', { comp: { on: true, model: 'dyna', p: { sens: 3, out: 5 } }, amp: { model: 'twin', p: { gain: 4, bass: 5, mid: 4, treble: 6.5, bright: 1, master: 4 } }, cab: { model: 'open212j', p: { mic: 2 } }, rev: { model: 'spring', on: true, p: { dwell: 6, mix: 4 } } }, -3),
-    make('Clean Chorus Arp', { amp: { model: 'twin', p: { gain: 3.5, bass: 4.5, mid: 5, treble: 6, master: 4 } }, cab: { model: 'open212j', p: { mic: 3 } }, mod: { on: true, model: 'ce2', p: { rate: 2.5, depth: 5 } }, dly: { on: true, model: 'dd3', p: { time: 360, fb: 3, mix: 3 } }, rev: { model: 'plate', on: true, p: { decay: 5, mix: 3 } } }, 4),
-    make('Tweed Blues', { od: { on: true, model: 'ts808', p: { drive: 2, tone: 5.5, level: 7 } }, amp: { model: 'bassman', p: { gain: 6.5, bass: 4, mid: 6, treble: 6, presence: 5, master: 7 } }, cab: { model: 'tweed410', p: { mic: 3 } }, rev: { model: 'spring', on: true, p: { dwell: 5, mix: 2.5 } } }),
-    make('Class-A Chime', { amp: { model: 'ac30', p: { gain: 5.5, bass: 4, treble: 7, cut: 3, master: 6 } }, cab: { model: 'open212b', p: { mic: 3 } }, dly: { on: true, model: 'dd3', p: { time: 380, fb: 3, mix: 3 } }, rev: { model: 'plate', on: true, p: { decay: 4, mix: 2 } } }),
-    make('80s Brit Rock', { amp: { model: 'jcm800', p: { gain: 7, bass: 5, mid: 6, treble: 6.5, presence: 6, master: 6 } }, cab: { model: 'gb412', p: { mic: 3.5, dist: 2 } }, rev: { model: 'room', on: true, p: { mix: 2 } } }),
-    make('Hot-Rod Lead', { od: { on: true, model: 'ts808', p: { drive: 0.8, tone: 6, level: 7.5 } }, amp: { model: 'slo', p: { gain: 7.5, bass: 5, mid: 6.5, treble: 6, presence: 6, depth: 5, master: 5.5 } }, cab: { model: 'v30412', p: { mic: 3 } }, dly: { on: true, model: 'dm2', p: { time: 300, fb: 3.5, mix: 3 } }, rev: { model: 'hall', on: true, p: { decay: 4, mix: 2 } } }),
-    make('Fuzz Wall', { dist: { on: true, model: 'muff', p: { sustain: 7, tone: 4.5, vol: 6 } }, amp: { model: 'plexi', p: { gain: 3, bass: 5, mid: 5, treble: 6, presence: 5, master: 5 } }, cab: { model: 'gb412' }, rev: { model: 'hall', on: true, p: { decay: 5, mix: 2.5 } } }, -1.5),
-    make('Grunge Dist', { dist: { on: true, model: 'rat', p: { dist: 6.5, filter: 3.5, vol: 6 } }, amp: { model: 'twin', p: { gain: 5, bass: 5, mid: 6, treble: 5.5, master: 5.5 } }, cab: { model: 'v30412', p: { mic: 4 } }, rev: { model: 'room', on: true, p: { mix: 2 } } }, -5),
-    make('Surf Spring', { amp: { model: 'twin', p: { gain: 4.5, bass: 4, mid: 5, treble: 7, bright: 1, master: 5 } }, cab: { model: 'open212j' }, mod: { on: false, model: 'trem', p: { speed: 6, intensity: 5 } }, rev: { model: 'spring', on: true, p: { dwell: 8.5, mix: 6.5, tone: 7 } } }, -7),
+    make('Clean Chorus Arp', { amp: { model: 'twin', p: { gain: 3.5, bass: 4.5, mid: 5, treble: 6, master: 4 } }, cab: { model: 'open212j', p: { mic: 3 } }, mod: { on: true, model: 'ce2', p: { rate: 2.5, depth: 5 } }, dly: { on: true, model: 'dd3', p: { time: 360, fb: 3, mix: 3 } }, rev: { model: 'plate', on: true, p: { decay: 5, mix: 3 } } }, 4.5),
+    make('Tweed Blues', { od: { on: true, model: 'ts808', p: { drive: 2, tone: 5.5, level: 7 } }, amp: { model: 'bassman', p: { gain: 5.5, bass: 4, mid: 6, treble: 6, presence: 5, master: 7 } }, cab: { model: 'tweed410', p: { mic: 3 } }, rev: { model: 'spring', on: true, p: { dwell: 5, mix: 2.5 } } }, -5.4),
+    make('Class-A Chime', { amp: { model: 'ac30', p: { gain: 5.5, bass: 4, treble: 7, cut: 3, master: 6 } }, cab: { model: 'open212b', p: { mic: 3 } }, dly: { on: true, model: 'dd3', p: { time: 380, fb: 3, mix: 3 } }, rev: { model: 'plate', on: true, p: { decay: 4, mix: 2 } } }, -1.0),
+    make('80s Brit Rock', { amp: { model: 'jcm800', p: { gain: 7, bass: 5, mid: 6, treble: 6.5, presence: 6, master: 6 } }, cab: { model: 'gb412', p: { mic: 3.5, dist: 2 } }, rev: { model: 'room', on: true, p: { mix: 2 } } }, -0.7),
+    make('Hot-Rod Lead', { od: { on: true, model: 'ts808', p: { drive: 0.8, tone: 6, level: 7.5 } }, amp: { model: 'slo', p: { gain: 7.5, bass: 5, mid: 6.5, treble: 6, presence: 6, depth: 5, master: 5.5 } }, cab: { model: 'v30412', p: { mic: 3 } }, dly: { on: true, model: 'dm2', p: { time: 300, fb: 3.5, mix: 3 } }, rev: { model: 'hall', on: true, p: { decay: 4, mix: 2 } } }, -1.5),
+    make('Fuzz Wall', { dist: { on: true, model: 'muff', p: { sustain: 7, tone: 4.5, vol: 6 } }, amp: { model: 'plexi', p: { gain: 3, bass: 5, mid: 5, treble: 6, presence: 5, master: 5 } }, cab: { model: 'gb412' }, rev: { model: 'hall', on: true, p: { decay: 5, mix: 2.5 } } }, -4.5),
+    make('Grunge Dist', { dist: { on: true, model: 'rat', p: { dist: 6.5, filter: 3.5, vol: 6 } }, amp: { model: 'twin', p: { gain: 5, bass: 5, mid: 6, treble: 5.5, master: 5.5 } }, cab: { model: 'v30412', p: { mic: 4 } }, rev: { model: 'room', on: true, p: { mix: 2 } } }, -5.5),
+    make('Surf Spring', { amp: { model: 'twin', p: { gain: 4.5, bass: 4, mid: 5, treble: 7, bright: 1, master: 5 } }, cab: { model: 'open212j' }, mod: { on: false, model: 'trem', p: { speed: 6, intensity: 5 } }, rev: { model: 'spring', on: true, p: { dwell: 8.5, mix: 6.5, tone: 7 } } }, -8.0),
     make('Solid Clean Chorus', { amp: { model: 'jc120', p: { gain: 4, bass: 5, mid: 5, treble: 6, bright: 1, master: 5 } }, cab: { model: 'jc212', p: { mic: 3 } }, mod: { on: true, model: 'ce2', p: { rate: 3, depth: 6 } }, rev: { model: 'room', on: true, p: { decay: 4, mix: 2.5 } } }),
-    make('Small Combo Indie', { amp: { model: 'princeton', p: { gain: 5.5, bass: 5, treble: 6, master: 6 } }, cab: { model: 'jensen110', p: { mic: 3 } }, dly: { on: true, model: 'memoryman', p: { time: 360, fb: 3, mix: 2.5, mod: 3 } }, rev: { model: 'spring', on: true, p: { dwell: 5, mix: 3 } } }),
-    make('Gold Edge', { od: { on: true, model: 'klon', p: { gain: 3.5, treble: 5.5, output: 6.5 } }, amp: { model: 'deville', p: { gain: 3, bass: 5, mid: 6, treble: 6, presence: 5, master: 6 } }, cab: { model: 'open212j', p: { mic: 3 } }, rev: { model: 'plate', on: true, p: { decay: 4, mix: 2 } } }, 1),
-    make("Round Fuzz '69", { dist: { on: true, model: 'fuzzface', p: { fuzz: 8, vol: 6 } }, amp: { model: 'jtm45', p: { gain: 5, bass: 5, mid: 6, treble: 6, presence: 5, master: 6.5 } }, cab: { model: 'gb412', p: { mic: 3 } }, mod: { on: false, model: 'vibe', p: { speed: 3, intensity: 7 } }, rev: { model: 'room', on: true, p: { mix: 2 } } }, -0.5),
-    make('Cali V-Lead', { gate: { on: true, model: 'ns2', p: { thresh: 4, decay: 3 } }, amp: { model: 'mark', p: { gain: 7, bass: 4, mid: 5, treble: 6.5, presence: 5.5, master: 5.5 } }, cab: { model: 'evm112', p: { mic: 3 } }, eq: { on: true, model: 'para', p: { low: 3, m1g: -4, m1f: 750, m2g: 0, high: 3 } }, dly: { on: true, model: 'dd3', p: { time: 420, fb: 3, mix: 2.5 } } }, 0.3),
-    make('Modern Chug', { gate: { on: true, model: 'ns2', p: { thresh: 5, decay: 2 } }, od: { on: true, model: 'ts808', p: { drive: 0.5, tone: 6, level: 7 } }, amp: { model: 'triple', p: { gain: 7, bass: 5.5, mid: 5, treble: 6, presence: 6, depth: 6, master: 5 } }, cab: { model: 't75412', p: { mic: 3 } } }, -1.5),
-    make('Shimmer Ambient', { amp: { model: 'twin', p: { gain: 4, bass: 4.5, mid: 5, treble: 6, master: 4 } }, cab: { model: 'open212j' }, mod: { on: true, model: 'ce2', p: { rate: 1.5, depth: 4 } }, dly: { on: true, model: 'memoryman', p: { time: 480, fb: 5, mix: 3.5, mod: 4 } }, rev: { model: 'shimmer', on: true, p: { decay: 7, mix: 5, shimmer: 5 } } }, 1.5),
-    make('Octave Riff', { pitch: { on: true, model: 'oc2', p: { oct: 6, direct: 7 } }, dist: { on: true, model: 'muff', p: { sustain: 6, tone: 5, vol: 6 } }, amp: { model: 'plexi', p: { gain: 3, master: 5 } }, cab: { model: 'gb412' } }, -2)
+    make('Small Combo Indie', { amp: { model: 'princeton', p: { gain: 5.5, bass: 5, treble: 6, master: 6 } }, cab: { model: 'jensen110', p: { mic: 3 } }, dly: { on: true, model: 'memoryman', p: { time: 360, fb: 3, mix: 2.5, mod: 3 } }, rev: { model: 'spring', on: true, p: { dwell: 5, mix: 3 } } }, -0.7),
+    make('Gold Edge', { od: { on: true, model: 'klon', p: { gain: 3.5, treble: 5.5, output: 6.5 } }, amp: { model: 'deville', p: { gain: 3, bass: 5, mid: 6, treble: 6, presence: 5, master: 6 } }, cab: { model: 'open212j', p: { mic: 3 } }, rev: { model: 'plate', on: true, p: { decay: 4, mix: 2 } } }, -3.4),
+    make("Round Fuzz '69", { dist: { on: true, model: 'fuzzface', p: { fuzz: 8, vol: 6 } }, amp: { model: 'jtm45', p: { gain: 5, bass: 5, mid: 6, treble: 6, presence: 5, master: 6.5 } }, cab: { model: 'gb412', p: { mic: 3 } }, mod: { on: false, model: 'vibe', p: { speed: 3, intensity: 7 } }, rev: { model: 'room', on: true, p: { mix: 2 } } }, -4.3),
+    make('Cali V-Lead', { gate: { on: true, model: 'ns2', p: { thresh: 4, decay: 3 } }, amp: { model: 'mark', p: { gain: 7, bass: 4, mid: 5, treble: 6.5, presence: 5.5, master: 5.5 } }, cab: { model: 'evm112', p: { mic: 3 } }, eq: { on: true, model: 'para', p: { low: 3, m1g: -4, m1f: 750, m2g: 0, high: 3 } }, dly: { on: true, model: 'dd3', p: { time: 420, fb: 3, mix: 2.5 } } }, -1.3),
+    make('Modern Chug', { gate: { on: true, model: 'ns2', p: { thresh: 5, decay: 2 } }, od: { on: true, model: 'ts808', p: { drive: 0.5, tone: 6, level: 7 } }, amp: { model: 'triple', p: { gain: 7, bass: 5.5, mid: 5, treble: 6, presence: 6, depth: 6, master: 5 } }, cab: { model: 't75412', p: { mic: 3 } } }, -2.9),
+    make('Shimmer Ambient', { amp: { model: 'twin', p: { gain: 4, bass: 4.5, mid: 5, treble: 6, master: 4 } }, cab: { model: 'open212j' }, mod: { on: true, model: 'ce2', p: { rate: 1.5, depth: 4 } }, dly: { on: true, model: 'memoryman', p: { time: 480, fb: 5, mix: 3.5, mod: 4 } }, rev: { model: 'shimmer', on: true, p: { decay: 7, mix: 5, shimmer: 5 } } }, 2.1),
+    make('Octave Riff', { pitch: { on: true, model: 'oc2', p: { oct: 6, direct: 7 } }, dist: { on: true, model: 'muff', p: { sustain: 6, tone: 5, vol: 6 } }, amp: { model: 'plexi', p: { gain: 3, master: 5 } }, cab: { model: 'gb412' } }, -6.1)
   ];
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
   function sanitize(p) {
