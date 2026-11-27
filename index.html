@@ -1436,18 +1436,25 @@ function SynthCore() {
     return out;
   }
 
-  /* finger squeak: the fretting finger sliding along a wound string between positions. Friction over the
-     windings makes a hiss whose pitch follows the hand's speed (rises, then falls as the hand stops). */
+  /* finger squeak: the fretting finger sliding along a wound string between positions. The windings under the
+     finger give a train of tiny friction clicks — their rate follows the hand's speed (speeds up, then slows as the
+     hand lands) — and the string itself rings with them, so the clicks are heard through a comb at the string's
+     sliding pitch, the way the pickup hears them. Kept quiet: on a real guitar it sits under the notes. */
   function renderSqueak(v, cfg, fs) {
     var dur = Math.min(0.2, Math.max(0.05, v.dur)), N = Math.ceil(dur * fs), out = new Float32Array(N), rnd = rng((v.seed || 5) * 131);
-    var z1 = 0, z2 = 0, lp = 0, lvl = (v.vel || 0.5) * 0.12 * (cfg.outGain || 1), fPeak = 2600 + 1600 * rnd();
+    var open = v.open || 45, fa = v.from || 0, fb = v.to != null ? v.to : 5, SZ = 4096, cb = new Float32Array(SZ), w = 0;
+    var ph = 0, click = 0, hp = 0, hpx = 0, lvl = (v.vel || 0.5) * 0.06 * (cfg.outGain || 1), peakRate = 900 + 1500 * rnd();
     for (var n = 0; n < N; n++) {
-      var u = n / N, sh = Math.sin(Math.PI * u), fc = 700 + fPeak * sh, w0 = 2 * Math.PI * fc / fs, Q = 5;
-      var al = Math.sin(w0) / (2 * Q), a0 = 1 + al, nb0 = al / a0, na1 = -2 * Math.cos(w0) / a0, na2 = (1 - al) / a0;
-      var x = rnd() * 2 - 1, y = nb0 * x + z1;                // band-pass (transposed direct form II), coefficients follow the sweep
-      z1 = -na1 * y + z2; z2 = -nb0 * x - na2 * y;
-      lp = 0.92 * lp + 0.08 * x;                               // a little low rustle under it
-      out[n] = (y * 0.9 + lp * 0.6) * Math.pow(sh, 1.5) * lvl;
+      var u = n / N, sh = Math.sin(Math.PI * u), rate = 150 + peakRate * Math.pow(sh, 0.8);
+      ph += rate / fs * (0.9 + 0.2 * rnd());
+      if (ph >= 1) { ph -= 1; click = 1; }
+      var ex = click * (rnd() * 2 - 1); click *= 0.55;               // a click lasts a few samples
+      var fret = fa + (fb - fa) * (u < 0.5 ? 2 * u * u : 1 - 2 * (1 - u) * (1 - u)); // the hand accelerates, then lands
+      var P = fs / (440 * Math.pow(2, (open + fret - 69) / 12)), pos = w - P, ip = Math.floor(pos), fr = pos - ip;
+      var past = cb[ip & (SZ - 1)] * (1 - fr) + cb[(ip + 1) & (SZ - 1)] * fr;
+      var y = ex + 0.72 * past; cb[w & (SZ - 1)] = y; w++;
+      hp = 0.96 * (hp + y - hpx); hpx = y;                              // no rumble
+      out[n] = hp * Math.pow(sh, 1.2) * lvl;
     }
     return out;
   }
@@ -1455,8 +1462,8 @@ function SynthCore() {
     if (v.squeak) return renderSqueak(v, cfg, fs);
     if (v.scrape) return renderScrape(v, cfg, fs);
     var dur = Math.min(v.dur, 9);
-    var rel = v.dead ? 0.012 : 0.035;
-    var N = Math.ceil((dur + rel) * fs);
+    var rel = v.dead ? 0.012 : 0.07; // the hand damps the string: it dies in a few tens of ms, darker first
+    var N = Math.ceil((dur + rel) * fs), relStart = Math.floor(dur * fs);
     var out = new Float32Array(N);
     var SZ = 16384, MASK = SZ - 1;
     var buf = new Float32Array(SZ);
@@ -1468,6 +1475,21 @@ function SynthCore() {
     var exc = (v.exc || []).slice().sort(function (a, b) { return a[0] - b[0]; });
     var ei = 0, bursts = [];
     var lp = 0, dcx = 0, dcy = 0, R = 1 - 2 * Math.PI * 22 / fs;
+    /* what keeps a plucked-string model from sounding electronic:
+       - stiffness: steel strings (wound ones more) are slightly inharmonic — upper partials run sharp. Two
+         first-order allpasses in the loop add that dispersion (Jaffe & Smith 1983; Välimäki et al. 1996).
+       - two planes of vibration: the string swings across and along the fretboard with slightly different pitch
+         and decay; the pickup hears both, giving the slow beating and two-stage decay of a real string.
+       - release: the fretting hand damps the string (highs die first) instead of a volume fade. */
+    // dispersion strength: the 15th partial of a wound string runs ~10-25 cents sharp, a plain one only a few;
+    // a fretted (shorter) string is stiffer. Solve the allpass coefficient that gives that stretch at this pitch.
+    var midi0 = v.pts && v.pts.length ? v.pts[0][1] : (v.open || 52), fret0 = Math.max(0, midi0 - (v.open || midi0));
+    var target15 = Math.min(25, (wound ? 11 : 2.5) * Math.pow(2, 2 * fret0 / 12)) / 1200 * Math.LN2, NAP = 4;
+    function apPD(c, wq) { return -(Math.atan2(-Math.sin(wq), c + Math.cos(wq)) - Math.atan2(-c * Math.sin(wq), 1 + c * Math.cos(wq))) / wq; }
+    var apC = 0, P0 = fs / (440 * Math.pow(2, (midi0 - 69) / 12)), w1 = 2 * Math.PI / P0, w15 = Math.min(3, 15 * w1);
+    (function () { var lo = 0, hi = 0.97; for (var it = 0; it < 24; it++) { var pmid = (lo + hi) / 2, d = NAP * (apPD(-pmid, w1) - apPD(-pmid, w15)) / P0; if (d < target15) lo = pmid; else hi = pmid; } apC = -(lo + hi) / 2; })();
+    var apX = new Float64Array(NAP), apY = new Float64Array(NAP);
+    var SZB = 16384, bufB = new Float32Array(SZB), lpB = 0, detB = 1 + (wound ? 0.0009 : 0.0006) * (0.6 + 0.8 * rnd()), mixB = 0.32;
     var coils = cfg.coils, nTap = coils.length * 3;
     var tapRatio = new Float64Array(nTap), tapW = new Float64Array(nTap), tapD = new Float64Array(nTap), tapD0 = new Float64Array(nTap);
     var si = v.s - 1;
@@ -1493,8 +1515,18 @@ function SynthCore() {
       var m = Math.max(1, Math.round(beta * L));
       var shaped = new Float32Array(L);
       for (i = 0; i < L; i++) shaped[i] = (data[i] - mean) - (i >= m ? data[i - m] - mean : 0);
+      /* a real pick pulls the string into a triangle (apex where it is picked) and lets go: that shape — not a
+         burst of hiss — is what starts the string. Mostly triangle, a little of the noise left for pick grit;
+         the brightness smoothing still applies so soft/dark picking stays soft. (CCRMA: "plucks are more than
+         short bursts of white-noise") */
+      var nPk = 1e-6; for (i = 0; i < L; i++) nPk = Math.max(nPk, Math.abs(shaped[i]));
+      var tri = new Float32Array(L), ty = 0, tmean = 0;
+      for (i = 0; i < L; i++) { var tv = i < m ? i / m : (L - 1 - i) / Math.max(1, L - 1 - m); ty = ty * cA * 0.6 + tv * (1 - cA * 0.6); tri[i] = ty; tmean += ty; }
+      tmean /= L; var tPk = 1e-6; for (i = 0; i < L; i++) { tri[i] -= tmean; tPk = Math.max(tPk, Math.abs(tri[i])); }
+      var grit = 0.3;
+      for (i = 0; i < L; i++) shaped[i] = (1 - grit) * tri[i] / tPk + grit * shaped[i] / nPk;
       var peak = 1e-6; for (i = 0; i < L; i++) peak = Math.max(peak, Math.abs(shaped[i]));
-      var g = amp / peak;
+      var g = amp / peak * 0.7; // same loudness as the old noise pluck, so preset levels stay put
       for (i = 0; i < L; i++) {
         var win = i < 4 ? i / 4 : (i > L - 5 ? (L - 1 - i) / 4 : 1);
         shaped[i] *= g * win;
@@ -1524,10 +1556,14 @@ function SynthCore() {
       var T60 = dead ? 0.03 : (pm ? 0.22 : 6.5 * sustain * (v.harm ? 1.6 : 1)) * Math.pow(f / 82.41, pm ? -0.25 : -0.6);
       gLoop = Math.pow(10, -3 / (f * T60));
       a = (wound ? 0.17 : 0.10) * (cfg.loopDamp || 1) * (v.harm ? 0.55 : 1) + (pm ? 0.42 : 0) + (dead ? 0.6 : 0);
+      var releasing = n0 >= relStart;
+      if (releasing) { a = Math.max(a, 0.78); gLoop = Math.min(gLoop, Math.pow(10, -3 / (f * 0.05))); }
       if (a > 0.93) a = 0.93;
+      var gLoopB = Math.pow(gLoop, 0.8), aB = a * 0.85;
       var w0 = 2 * Math.PI * f / fs;
       var pd = Math.atan2(a * Math.sin(w0), 1 - a * Math.cos(w0)) / w0;
-      var Dt = Math.max(3, P - pd);
+      var pdAP = apPD(apC, w0);
+      var Dt = Math.max(3, P - pd - NAP * pdAP), DtB = Math.max(3, (P - pd) * detB);
       if (Dprev < 0) Dprev = Dt;
       var lenIn = cfg.scale * Math.pow(2, -(lenAt(t) - v.open) / 12);
       for (k = 0; k < nTap; k++) { tapD0[k] = tapD[k] || (tapRatio[k] / lenIn) * P; tapD[k] = Math.max(0.5, (tapRatio[k] / lenIn) * P); }
@@ -1545,9 +1581,17 @@ function SynthCore() {
         var x0 = buf[(ip - 1) & MASK], x1 = buf[ip & MASK], x2 = buf[(ip + 1) & MASK], x3 = buf[(ip + 2) & MASK];
         var y = -fr * (fr - 1) * (fr - 2) / 6 * x0 + (fr + 1) * (fr - 1) * (fr - 2) / 2 * x1
           - (fr + 1) * fr * (fr - 2) / 2 * x2 + (fr + 1) * fr * (fr - 1) / 6 * x3;
-        lp = (1 - a) * y + a * lp;
+        var z2 = y;                                                   // dispersion (stiff string)
+        for (var ai = 0; ai < NAP; ai++) { var za = apC * z2 + apX[ai] - apC * apY[ai]; apX[ai] = z2; apY[ai] = za; z2 = za; }
+        lp = (1 - a) * z2 + a * lp;
         var val = lp * gLoop + e;
         buf[w & MASK] = val;
+        // second plane of vibration: slightly sharper, decays slower, fed by part of the pluck
+        var posB = w - DtB, ipB = Math.floor(posB), frB = posB - ipB;
+        var yB = bufB[ipB & (SZB - 1)] * (1 - frB) + bufB[(ipB + 1) & (SZB - 1)] * frB;
+        lpB = (1 - aB) * yB + aB * lpB;
+        var valB = lpB * gLoopB + e * 0.45;
+        bufB[w & (SZB - 1)] = valB;
         var o = 0;
         for (k = 0; k < nTap; k++) {
           var dk = tapD0[k] + (tapD[k] - tapD0[k]) * u;
@@ -1555,14 +1599,17 @@ function SynthCore() {
           var past = buf[i2 & MASK] * (1 - f2) + buf[(i2 + 1) & MASK] * f2;
           o += tapW[k] * (val - past);
         }
+        var pB = w - tapD[1], iB = Math.floor(pB), fB = pB - iB;
+        o += mixB * tapW[1] * 2 * (valB - (bufB[iB & (SZB - 1)] * (1 - fB) + bufB[(iB + 1) & (SZB - 1)] * fB));
         dcy = o - dcx + R * dcy; dcx = o;
         out[n] = dcy;
         w++;
       }
       Dprev = Dt;
     }
-    // release (string damped by the hand)
-    var rs = Math.floor(dur * fs), rl = N - rs;
+    // release: the loop above already damps the string from relStart; a short fade at the very end only makes
+    // sure the buffer ends at silence
+    var rs = Math.floor((dur + rel * 0.6) * fs), rl = Math.max(1, N - rs);
     for (n = rs; n < N; n++) { var x = (n - rs) / rl; out[n] *= 0.5 + 0.5 * Math.cos(Math.PI * x); }
     var g = cfg.outGain || 1;
     for (n = 0; n < N; n++) out[n] *= g;
@@ -4871,9 +4918,9 @@ var Seq = (function () {
         var pv = lastOn[s];
         if (human && s >= 4 && pv && !n.legato && !n.tie && Math.abs(n.fret - pv.fret) >= 3 && (n.fret > 0 || pv.fret > 0)) {
           var gap = tRel - pv.t;
-          if (gap > 0.14 && gap < 1.2 && hr(hseed + 3) < 0.55) {
-            var sd = Math.min(0.12, gap * 0.45);
-            voices.push({ id: vid++, s: s, t0: Math.max(0, tRel - sd - 0.004), notes: [], scrapeOnly: true, r: { s: s, squeak: 1, dur: sd, vel: 0.5 + 0.5 * hr(hseed + 4), seed: hseed & 0xffff, pts: [], lenPts: [], vib: [], exc: [] } });
+          if (gap > 0.14 && gap < 1.2 && Math.abs(n.fret - pv.fret) >= 4 && hr(hseed + 3) < 0.4) {
+            var sd = Math.min(0.11, gap * 0.4);
+            voices.push({ id: vid++, s: s, t0: Math.max(0, tRel - sd - 0.004), notes: [], scrapeOnly: true, r: { s: s, squeak: 1, dur: sd, open: open, from: pv.fret, to: n.fret, vel: 0.4 + 0.5 * hr(hseed + 4), seed: hseed & 0xffff, pts: [], lenPts: [], vib: [], exc: [] } });
           }
         }
         lastOn[s] = { t: tRel, fret: n.fret };
@@ -4961,7 +5008,7 @@ var Seq = (function () {
       r.pts.sort(function (a, b) { return a[0] - b[0]; }); r.lenPts.sort(function (a, b) { return a[0] - b[0]; });
       var rr = function (x) { return Math.round(x * 1000) / 1000; };
       v.key = hash(JSON.stringify([r.s, r.open, rr(r.dur), r.pts.map(function (p) { return [rr(p[0]), p[1], p[2]]; }),
-        r.lenPts.map(function (p) { return [rr(p[0]), p[1], p[2]]; }), r.vib, r.pm, r.dead, r.harm, r.scrape, r.squeak, rr(r.vel), r.exc.map(function (e) { return [rr(e[0]), e[1], e[2], e[3], e[4]]; }), r.seed]));
+        r.lenPts.map(function (p) { return [rr(p[0]), p[1], p[2]]; }), r.vib, r.pm, r.dead, r.harm, r.scrape, r.squeak, r.from, r.to, rr(r.vel), r.exc.map(function (e) { return [rr(e[0]), e[1], e[2], e[3], e[4]]; }), r.seed]));
     });
     display.sort(function (a, b) { return a.t - b.t; });
     dirty = false;
