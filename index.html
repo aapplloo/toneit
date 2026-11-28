@@ -4593,6 +4593,13 @@ var LocalTab = (function () {
             if (opt.dbgRound) opt.dbgRound.push([pa, cl.s, +cl.score.toFixed(2), +rUp.toFixed(2), +lLow.toFixed(2), +mid.toFixed(2), +lUp.toFixed(2), +rLow.toFixed(2), nw]);
             if (nw) cl = { s: nw, score: Math.max(cl.score, 0.74), margin: 0.06, s2: cl.s };
           }
+          // a 1 has a flag (and often a foot): a plain bar of even width is a stem drawn through the staff between
+          // the notes of a chord (some engravers do that)
+          if (!OFF.bar1 && cl.s === '1' && w <= Math.max(4, sp * 0.2)) {
+            var wmin = 1e9, wmax = 0, rows7 = 0; for (var ry7 = qa; ry7 <= qb; ry7++) { if (Math.abs(ry7 - lyc) <= tt) continue; var c7 = 0; for (var rx7 = pa; rx7 <= pb; rx7++) if (ink(rx7, ry7) > 0.5) c7++; if (!c7) continue; rows7++; wmin = Math.min(wmin, c7); wmax = Math.max(wmax, c7); }
+            if (opt.dbgRound) opt.dbgRound.push([pa, 'bar1', w, h, +(w / sp).toFixed(3), wmin, wmax, rows7, +cl.score.toFixed(2), Math.round(qa - lyc), Math.round(qb - lyc)]);
+            if (rows7 >= 8 && wmax - wmin <= (rows7 >= 12 ? 1 : 0)) cl = { s: cl.s, score: 0.3, margin: 0, s2: cl.s2 };
+          }
           // a digit other than 1 is wide somewhere (off the line): a thin slanted stroke crossing the line is an arrow
           if (!OFF.stroke && /^[02-9]$/.test(cl.s) && cl.score < 0.72) {
             var mxw = 0, cxs = []; for (var ry6 = qa; ry6 <= qb; ry6++) { if (Math.abs(ry6 - lyc) <= tt) continue; var run6 = 0, sx6 = 0, n6 = 0; for (var rx6 = pa; rx6 <= pb; rx6++) { if (ink(rx6, ry6) > 0.5) { run6++; sx6 += rx6; n6++; if (run6 > mxw) mxw = run6; } else run6 = 0; } if (n6) cxs.push(sx6 / n6); }
