@@ -4573,8 +4573,9 @@ var LocalTab = (function () {
             else if (!OFF.r08b && cl.score < 0.86 && cl.s === '0' && h >= 12 && w >= 7 && mid >= 0.3) {
               var edge = function (yy3) { var l3 = -1, r3 = -1; for (var xx3 = pa; xx3 <= pb; xx3++) if (ink(xx3, yy3) > 0.5) { if (l3 < 0) l3 = xx3; r3 = xx3; } return [l3, r3]; };
               var band = function (f0, f1) { var L = 1e9, R = -1e9, Lmin = 1e9, Rmax = -1e9; for (var yy4 = Math.round(qa + h * f0); yy4 <= Math.round(qa + h * f1); yy4++) { var e4 = edge(yy4); if (e4[0] < 0) continue; L = Math.min(L, e4[0]); R = Math.max(R, e4[1]); } return [L, R]; };
-              var waistL = 1e9, waistR = -1e9;
-              for (var yy5 = Math.round(qa + h * 0.4); yy5 <= Math.round(qa + h * 0.52); yy5++) { var e5 = edge(yy5); if (e5[0] < 0) continue; waistL = Math.min(waistL, e5[0]); waistR = Math.max(waistR, e5[1]); }
+              // the narrowest row around the middle
+              var waistL = 1e9, waistR = -1e9, bestW5 = 1e9;
+              for (var yy5 = Math.round(qa + h * 0.36); yy5 <= Math.round(qa + h * 0.56); yy5++) { var e5 = edge(yy5); if (e5[0] < 0) continue; if (e5[1] - e5[0] < bestW5) { bestW5 = e5[1] - e5[0]; waistL = e5[0]; waistR = e5[1]; } }
               var up4 = band(0.18, 0.32), lo4 = band(0.62, 0.8), pL = waistL - Math.min(up4[0], lo4[0]), pR = Math.max(up4[1], lo4[1]) - waistR;
               if (opt.dbgRound) opt.dbgRound.push([pa, 'r08b', +cl.score.toFixed(2), pL, pR, +mid.toFixed(2), w, h]);
               if (pL >= 1 && pR >= 1) nw = '8';
@@ -4591,6 +4592,13 @@ var LocalTab = (function () {
             }
             if (opt.dbgRound) opt.dbgRound.push([pa, cl.s, +cl.score.toFixed(2), +rUp.toFixed(2), +lLow.toFixed(2), +mid.toFixed(2), +lUp.toFixed(2), +rLow.toFixed(2), nw]);
             if (nw) cl = { s: nw, score: Math.max(cl.score, 0.74), margin: 0.06, s2: cl.s };
+          }
+          // a digit other than 1 is wide somewhere (off the line): a thin slanted stroke crossing the line is an arrow
+          if (!OFF.stroke && /^[02-9]$/.test(cl.s) && cl.score < 0.72) {
+            var mxw = 0, cxs = []; for (var ry6 = qa; ry6 <= qb; ry6++) { if (Math.abs(ry6 - lyc) <= tt) continue; var run6 = 0, sx6 = 0, n6 = 0; for (var rx6 = pa; rx6 <= pb; rx6++) { if (ink(rx6, ry6) > 0.5) { run6++; sx6 += rx6; n6++; if (run6 > mxw) mxw = run6; } else run6 = 0; } if (n6) cxs.push(sx6 / n6); }
+            var slant = cxs.length >= 4 ? Math.abs((cxs[0] + cxs[1]) / 2 - (cxs[cxs.length - 1] + cxs[cxs.length - 2]) / 2) : 0;
+            // (and it runs on through the cut toward the line above, where a number would end)
+            if (mxw <= Math.max(3, sp * 0.2) && slant >= sp * 0.15 && cutA[1] > 0) cl = { s: cl.s, score: 0.3, margin: 0, s2: cl.s2 };
           }
           if (opt.debug) opt.debug.push({ ly: lyc, stemTop: Math.min.apply(null, Array.prototype.slice.call(stemTop, pa, pb + 1)), probe: lineY(5, pa) + sp * 0.9, line: i, x: pa, w: w, h: h, s: cl.s, score: +cl.score.toFixed(2), m: +cl.margin.toFixed(2), img: (function () { var a2 = []; for (var yy2 = 0; yy2 < h; yy2++) { var row = ''; for (var xx2 = 0; xx2 < w; xx2++) row += ink(pa + xx2, qa + yy2) > 0.5 ? '#' : '.'; a2.push(row); } return a2; })() });
           return { a: pa, b: pb, s: cl.s, score: cl.score, margin: cl.margin, s2: cl.s2, h: h };
