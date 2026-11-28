@@ -4451,6 +4451,11 @@ var LocalTab = (function () {
           if ((t0 !== ya3 || t1 !== yb3) && wide >= sp * 0.35 && !thinAll) { ya3 = t0; yb3 = t1; }
         }
         var hh = yb3 - ya3 + 1;
+        // a solid little block on a line is a whole/half rest, not a number (an 8 has holes)
+        if (!OFF.block && hh <= sp * 0.55 && b0 - a0 + 1 >= sp * 0.35 && b0 - a0 + 1 <= sp * 1.0) {
+          var fillN = 0, fillT = 0; for (xx = a0; xx <= b0; xx++) for (yy = ya3; yy <= yb3; yy++) { fillT++; if (dark(xx, yy)) fillN++; }
+          if (fillN >= fillT * 0.85) { if (opt.dbgRun) opt.dbgRun.push([i, a0, b0, 'restblock']); return; }
+        }
         if (hh < sp * 0.38 || hh > sp * 0.97 || b0 - a0 + 1 < Math.max(2, sp * 0.1)) { if (opt.dbgRun) opt.dbgRun.push([i, a0, b0, 2, hh, ya3 - lyc, yb3 - lyc]); if (hh > sp * 0.97 && hh <= sp * 1.2) tallRuns.push([a0, b0]); return; }
         if (ya3 <= lyc - hb + 1 && yb3 >= lyc + hb - 1 && b0 - a0 < sp * 0.35) { if (opt.dbgRun) opt.dbgRun.push([i, a0, b0, 3]); return; } // a thin stroke through the whole band (bend arrow, slur)
         if (b0 - a0 + 1 <= Math.max(3, sp * 0.4)) { // a stem hanging below a note on the line above (a number ends before the band edge)
@@ -4624,7 +4629,7 @@ var LocalTab = (function () {
       if (n.alt == null) return;
       var near = notes.filter(function (m) { return m !== n && m.s === n.s && !m.unsure && Math.abs(m.x - n.x) < sp * 14; }).sort(function (p, q) { return Math.abs(p.x - n.x) - Math.abs(q.x - n.x); }).slice(0, 4);
       var forAlt = near.filter(function (m) { return m.fret === n.alt; }).length, forCur = near.filter(function (m) { return m.fret === n.fret; }).length;
-      if (forAlt > forCur) n.fret = n.alt;
+      if (forAlt > forCur && (forAlt >= 2 || n.unsure || OFF.alt1)) n.fret = n.alt; // one neighbour alone is not enough to overrule a clear reading
     });
 
     // time signature: a tall pair of digits right after a bar line (the TAB clef at a system start is skipped)
