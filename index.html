@@ -3056,7 +3056,7 @@ var PdfTab = (function () {
       var n = parseInt(t.s, 10); if (!(n === 3 || n === 5 || n === 6) || t.s.trim().length !== 1) return;
       var cx = (t.x0 + t.x1) / 2, bm = D.beams.filter(function (r) { return r.x0 - sp * 0.3 <= cx && cx <= r.x1 + sp * 0.3; })[0];
       var span = bm ? [bm.x0 - sp * 0.2, bm.x1 + sp * 0.2] : [cx - sp * 2.2, cx + sp * 2.2];
-      beats.forEach(function (b) { if (b.dur && b.x >= span[0] && b.x <= span[1] && !b.tup) { b.tup = n; b.dur *= n === 3 ? 2 / 3 : n === 5 ? 4 / 5 : 4 / 6; } });
+      beats.forEach(function (b) { if (b.dur && b.x >= span[0] && b.x <= span[1] && !b.tup) { b.tup = n; b.tupF = n === 3 ? 2 / 3 : n === 5 ? 4 / 5 : 4 / 6; b.dur *= b.tupF; } });
     });
     // techniques written above the staff
     D.gl.forEach(function (g) {
@@ -3147,6 +3147,11 @@ var PdfTab = (function () {
         bb.forEach(function (b, i) { var d = Math.max(0.25, Math.round((xs[i + 1] - xs[i]) / span * len * 4) / 4); b.dur = d; acc += d; });
         if (bb.length && acc !== len) bb[bb.length - 1].dur = Math.max(0.25, bb[bb.length - 1].dur + len - acc);
       } else {
+        // a digit under the staff that is not a tuplet mark (fingering, a string number): the bar only adds up
+        // without it
+        var sumT = 0, sumN = 0, anyT = false;
+        bb.forEach(function (b) { if (b.dur == null) return; sumT += b.dur; sumN += b.tup ? b.dur / b.tupF : b.dur; if (b.tup) anyT = true; });
+        if (anyT && Math.abs(sumT - len) > 0.01 && Math.abs(sumN - len) < 0.01) bb.forEach(function (b) { if (b.tup) { b.dur /= b.tupF; b.tup = null; } });
         var known = 0, unk = [];
         bb.forEach(function (b) { if (b.dur == null) unk.push(b); else known += b.dur; });
         unk.forEach(function (b) { b.dur = Math.max(0.25, (len - known) / unk.length); });
@@ -4425,7 +4430,7 @@ var LocalTab = (function () {
         if (OFF.ext4on) { var s1 = rn[0]; while (rn[0] - 1 >= lim0 && any[rn[0] - 1] && dark(rn[0] - 1, lineY(i, rn[0] - 1)) && s1 - (rn[0] - 1) <= Math.round(sp * 0.35)) rn[0]--; }
         var e0 = rn[1]; while (rn[1] + 1 <= lim1 && any[rn[1] + 1] && rn[1] + 1 - e0 <= ext) rn[1]++;
       });
-      var toks = [], tallRuns = [];
+      var toks = [], tallRuns = [], humps = [];
       runs.forEach(function (rn) {
         var a0 = rn[0], b0 = rn[1], lyc = lineY(i, (a0 + b0) >> 1), xx, yy;
         // bigger than a fret number (TAB clef, time signature, rest): remember, don't read as a note
@@ -4481,6 +4486,7 @@ var LocalTab = (function () {
           var fillN = 0, fillT = 0; for (xx = a0; xx <= b0; xx++) for (yy = ya3; yy <= yb3; yy++) { fillT++; if (dark(xx, yy)) fillN++; }
           if (fillN >= fillT * 0.85) { if (opt.dbgRun) opt.dbgRun.push([i, a0, b0, 'restblock']); return; }
         }
+        if (hh < sp * 0.38 && hh >= sp * 0.15) humps.push([a0, b0]);
         if (hh < sp * 0.38 || hh > sp * 0.97 || b0 - a0 + 1 < Math.max(2, sp * 0.1)) { if (opt.dbgRun) opt.dbgRun.push([i, a0, b0, 2, hh, ya3 - lyc, yb3 - lyc]); if (hh > sp * 0.97 && hh <= sp * 1.2) tallRuns.push([a0, b0]); return; }
         if (ya3 <= lyc - hb + 1 && yb3 >= lyc + hb - 1 && b0 - a0 < sp * 0.35) { if (opt.dbgRun) opt.dbgRun.push([i, a0, b0, 3]); return; } // a thin stroke through the whole band (bend arrow, slur)
         if (b0 - a0 + 1 <= Math.max(3, sp * 0.4)) { // a stem hanging below a note on the line above (a number ends before the band edge)
@@ -4559,14 +4565,14 @@ var LocalTab = (function () {
             if (nw) cl = { s: nw, score: Math.max(cl.score, 0.74), margin: 0.06, s2: cl.s };
           }
           if (opt.debug) opt.debug.push({ ly: lyc, stemTop: Math.min.apply(null, Array.prototype.slice.call(stemTop, pa, pb + 1)), probe: lineY(5, pa) + sp * 0.9, line: i, x: pa, w: w, h: h, s: cl.s, score: +cl.score.toFixed(2), m: +cl.margin.toFixed(2), img: (function () { var a2 = []; for (var yy2 = 0; yy2 < h; yy2++) { var row = ''; for (var xx2 = 0; xx2 < w; xx2++) row += ink(pa + xx2, qa + yy2) > 0.5 ? '#' : '.'; a2.push(row); } return a2; })() });
-          return { a: pa, b: pb, s: cl.s, score: cl.score, margin: cl.margin, s2: cl.s2 };
+          return { a: pa, b: pb, s: cl.s, score: cl.score, margin: cl.margin, s2: cl.s2, h: h };
         }
         var parts = pieces.map(function (pc) { return readPiece(pc[0], pc[1]); }).filter(Boolean);
         if (pieces.length > 1) { // was splitting right? a wide X or a touching pair: keep whichever reads better
           var whole = readPiece(a0, b0), mean = parts.reduce(function (s2, q) { return s2 + q.score; }, 0) / Math.max(1, parts.length);
           if (whole && (whole.score >= mean - 0.02 || /[\(\)<>]/.test(parts.map(function (q) { return q.s; }).join('')) && whole.score > 0.7)) parts = [whole];
         }
-        parts.forEach(function (tk) { if (tk.score >= 0.55) toks.push(tk); });
+        parts.forEach(function (tk) { if (tk.score >= 0.55) toks.push(tk); if (tk.h <= sp * 0.58) humps.push([tk.a, tk.b]); });
       });
       // an X (or other character) cut in two at the line: read the pair as one if that matches better
       function readSpan(pa, pb) {
@@ -4663,6 +4669,19 @@ var LocalTab = (function () {
         for (var dx = -2; dx <= 2 && !hit; dx++) for (var dyc = -dyMax; dyc <= dyMax && !hit; dyc++) if (arms(Math.round(xc + dx), hw, dyc)) hit = true;
         return hit ? { x: xc, used: used, a: a, b: b } : null;
       };
+      // a wavy line along the string (trill, pick scrape, vibrato bar): a chain of low, evenly spaced humps
+      if (!OFF.wavy && humps.length >= 3) {
+        humps.sort(function (p, q) { return p[0] - q[0]; });
+        var spans = [];
+        for (var w0 = 0; w0 < humps.length; w0++) {
+          var w1 = w0; while (w1 + 1 < humps.length && humps[w1 + 1][0] - humps[w1][1] <= sp * 0.35) w1++;
+          if (w1 - w0 >= 2) spans.push([humps[w0][0], humps[w1][1]]);
+          w0 = w1;
+        }
+        if (spans.length) toks = toks.filter(function (t) { return !(t.h <= sp * 0.58 && spans.some(function (sp2) { return t.a >= sp2[0] - 1 && t.b <= sp2[1] + 1; })); });
+      }
+      // a low hump that only just reads as a digit is a piece of a line or squiggle, not a number
+      if (!OFF.lowtok) toks = toks.filter(function (t) { return !(t.h != null && t.h <= sp * 0.5 && t.score < 0.62 && /\d/.test(t.s)); });
       // a blurred serif 1 reads as a bracket: a ')' right before a number with no number before it, or a '('
       // right before a number that no ')' closes, is the 1 of 10–19
       if (!OFF.br1) toks.forEach(function (tk, k) {
@@ -4694,7 +4713,7 @@ var LocalTab = (function () {
         if (!near) flush();
         if (!cur) cur = { a: tk.a, b: tk.b, d: [], ghost: false, harm: false, dead: false };
         cur.b = tk.b;
-        if (/[TAB]/.test(tk.s)) { clefX = Math.max(clefX, tk.b); return; }
+        if (/[TAB]/.test(tk.s)) { if (OFF.clefAny || tk.a <= X0 + sp * 2.2) clefX = Math.max(clefX, tk.b); return; } // only at the very start: a rest's zigzag can read as a letter too
         if (/\d/.test(tk.s)) cur.d.push(tk);
         else if (tk.s === '(' || tk.s === ')') cur.ghost = true;
         else if (tk.s === '<' || tk.s === '>') cur.harm = true;
@@ -4747,7 +4766,7 @@ var LocalTab = (function () {
       if (qb < 0 || qb - qa < sp * 0.9) return null;
       return classify(vec(function (gx, gy) { return clean(xa + gx, qa + gy); }, xb - xa + 1, qb - qa + 1), set);
     }
-    var top0 = lineY(0, X0), mid = st.top + sp * 2.5, bot0 = lineY(5, X0);
+    var top0 = lineY(0, X0), mid = st.top + sp * 2.5, bot0 = lineY(5, X0), tsG = {};
     barX.forEach(function (bx, bi) {
       var gs = overG.filter(function (o) { return o.a > bx && o.a < bx + sp * 6; });
       if (opt.dbgTs && bi === 0) opt.dbgTs.push({ over: overG.slice(0, 6), bx: bx, clefX: clefX });
@@ -4756,7 +4775,8 @@ var LocalTab = (function () {
       if (bi === 0) { var t0 = readTall(gs[0].a, gs[0].b, top0 - sp * 0.3, top0 + sp * 1.7, TPL_L); if (!t0 || /[TAB]/.test(t0.s) || gs.length > 1) gI = 1; }
       var gg = gs[gI]; if (!gg) return;
       var up = readTall(gg.a, gg.b, top0 - sp * 0.4, mid, TPL_L), dn = readTall(gg.a, gg.b, mid, bot0 + sp * 0.4, TPL_L);
-      if (up && dn && /^\d$/.test(up.s) && /^(2|4|8)$/.test(dn.s) && up.score > 0.5 && dn.score > 0.5 && +up.s > 0) ts[bi] = up.s + '/' + dn.s;
+      if (up && dn && /^\d$/.test(up.s) && /^(2|4|8)$/.test(dn.s) && up.score > 0.5 && dn.score > 0.5 && +up.s > 0) { ts[bi] = up.s + '/' + dn.s; tsG[bi] = gg; }
+      else if (up && dn && /^\d$/.test(up.s) && /^\d$/.test(dn.s) && up.score > 0.6 && dn.score > 0.6) tsG[bi] = gg; // digits stacked like a time signature: not a rest
       if (opt.dbgTs) opt.dbgTs.push({ bi: bi, bx: bx, gs: gs, gI: gI, up: up, dn: dn });
     });
 
@@ -4769,7 +4789,7 @@ var LocalTab = (function () {
       function offLineInk(xq) { var c = 0; for (var yq = lineY(0, xq) - 1; yq <= lineY(5, xq) + 1; yq++) { var onL = false; for (var li = 0; li < 6; li++) if (Math.abs(yq - lineY(li, xq)) <= tt) onL = true; if (!onL && dark(xq, yq)) c++; } return c; }
       for (var xq = xs0; xq <= xe; xq++) {
         var ink = offLineInk(xq);
-        if (ink) {
+        if (ink >= (OFF.clef1 ? 1 : Math.max(3, sp * 0.12))) { // (a pixel or two along a thick line is not ink)
           started = true; last = xq; gapRun = 0;
           if (vrun(xq, lineY(0, xq) - sp * 0.3, lineY(2, xq)) >= sp * 1.15) tallTop = true;
           if (vrun(xq, lineY(3, xq), lineY(5, xq) + sp * 0.3) >= sp * 1.15) tallBot = true;
@@ -4780,7 +4800,15 @@ var LocalTab = (function () {
     var usedG = [];
     barX.forEach(function (bx, bi) { // clef / time-signature groups are not rests
       var gs = overG.filter(function (o) { return o.a > bx && o.a < bx + sp * 6; });
-      if (bi === 0) usedG = usedG.concat(gs.filter(function (o) { var firstNote = notes.filter(function (n) { return n.x > bx; }).sort(function (p, q) { return p.x - q.x; })[0]; return !firstNote || o.b < firstNote.x; }));
+      if (bi === 0) usedG = usedG.concat(gs.filter(function (o, oi) {
+        var firstNote = notes.filter(function (n) { return n.x > bx; }).sort(function (p, q) { return p.x - q.x; })[0];
+        if (firstNote && o.b >= firstNote.x) return false;
+        if (OFF.rest0) return true;
+        // before the first note: the clef and the time signature — but a rest standing there after them is a rest
+        if (o === tsG[0]) return true;
+        if (clefX > 0) return o.a <= clefX + sp * 0.3;
+        return oi === 0 || (oi === 1 && ts[0]);
+      }));
       else if (ts[bi] && gs[0]) usedG.push(gs[0]);
     });
     // a sign spanning several lines (clef, time signature, rest) wipes numbers under it; one confined to a single line
@@ -4789,7 +4817,8 @@ var LocalTab = (function () {
     var startX = barX[0];
     if (clefX > 0 && clefX < barX[0] + sp * 4) startX = clefX;
     usedG.forEach(function (o) { if (o.a < barX[0] + sp * 7) startX = Math.max(startX, o.b); });
-    overG.forEach(function (o) { if (o.a < barX[0] + sp * 3.5) { usedG.push(o); startX = Math.max(startX, o.b); } });
+    // signs right at the start belong to the clef (a rest further on, after the clef, stays a rest)
+    overG.forEach(function (o) { if (o.a < barX[0] + sp * 3.5 && (OFF.rest0 || clefX <= 0 || o.a <= clefX + sp * 0.6 || o === tsG[0])) { usedG.push(o); startX = Math.max(startX, o.b); } });
     var restG = null;
 
     // rests: ink blobs in the middle of the staff that are not numbers, bar lines or the clef
@@ -4801,7 +4830,9 @@ var LocalTab = (function () {
         var c = 0, ya4 = lineY(1, x2) - Math.round(sp * 0.3), yb4 = lineY(4, x2) + Math.round(sp * 0.3);
         for (y2 = ya4; y2 <= yb4; y2++) { var on = false; for (var li = 1; li <= 4; li++) if (Math.abs(y2 - lineY(li, x2)) <= tt) on = true; if (!on && gdark(x2, y2)) c++; }
         if (c >= sp * 0.35) prof[x2] = 1;
+        if (opt.dbgRests && opt.dbgRestX && x2 >= opt.dbgRestX[0] && x2 <= opt.dbgRestX[1]) opt.dbgRests.push([x2, c]);
       }
+      if (opt.dbgRests && opt.dbgRestX) opt.dbgRests.push(['startX', startX, X0, Math.round(sp * 10) / 10]);
       for (x2 = X0; x2 <= X1; x2++) if (prof[x2]) {
         var a5 = x2; while (x2 + 1 <= X1 && (prof[x2 + 1] || prof[x2 + 2])) x2++;
         var w5 = x2 - a5 + 1;
@@ -4816,6 +4847,13 @@ var LocalTab = (function () {
       var mg = [];
       out.forEach(function (r) { var l = mg[mg.length - 1]; if (l && r.x - l.x < sp * 0.9) { l.x = (l.x + r.x) / 2; l.h = Math.max(l.h, r.h); l.b = r.b; } else mg.push({ x: r.x, h: r.h, a: r.a, b: r.b }); });
       if (opt.dbgRests) opt.dbgRests.push(mg.map(function (r) { return [Math.round(r.x), +r.h.toFixed(2)]; }), out.map(function (r) { return [Math.round(r.x), +r.h.toFixed(2)]; }));
+      // the two sides of a circle drawn round a number (a whole note) are not two rests
+      if (!OFF.circ) mg = mg.filter(function (r) {
+        return !notes.some(function (n) {
+          var d = n.x - r.x; if (Math.abs(d) > sp * 1.7) return false;
+          return mg.some(function (q) { return q !== r && Math.abs((q.x - n.x) - d) < sp * 0.3 && Math.sign(q.x - n.x) === Math.sign(d); });
+        });
+      });
       return mg;
     }
 
