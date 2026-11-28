@@ -2938,6 +2938,7 @@ var PdfTab = (function () {
 
   /* ---------- staves ---------- */
   function findStaves(pg) {
+    var OFF = (typeof window !== 'undefined' && window.__omrOff) || {};
     // tab staff lines are often broken where the fret numbers sit, so look for 6 equally spaced rows whose
     // combined length is large, rather than 6 long lines
     var H = pg.lines.filter(function (l) { return l.y1 - l.y0 < 0.4 && l.x1 - l.x0 > 2; });
@@ -2952,8 +2953,17 @@ var PdfTab = (function () {
         var d = cand[j] - y; if (d < 3) continue; if (d > 16) break;
         var grp = [y], tot = byY[y];
         for (var k = 1; k <= 5; k++) { var hit = near(y + k * d, Math.max(0.3, d * 0.08)); if (hit == null || used[hit]) break; grp.push(hit); tot += byY[hit]; }
-        if (grp.length === 6 && tot > pg.W * 1.1 && byY[grp[5]] > pg.W * 0.08) {
+        // (a 5-line notation staff plus a row of short ledger lines is not a tab staff: the six lines run about equally far)
+        var lens6 = grp.map(function (g) { return byY[g]; }), even6 = OFF.pdfeven || (grp.length === 6 && Math.min.apply(null, lens6) >= Math.max.apply(null, lens6) * 0.35);
+        if (grp.length === 6 && tot > pg.W * 1.1 && byY[grp[5]] > pg.W * 0.08 && even6) {
           var x0 = Math.min.apply(null, grp.map(function (g) { return ext[g][0]; })), x1 = Math.max.apply(null, grp.map(function (g) { return ext[g][1]; }));
+          // a notation staff (noteheads, no fret numbers) whose ledger lines happen to make a sixth line: skip it
+          if (!OFF.pdfnotehead) {
+            var spc = (grp[5] - y) / 5, inS = function (t) { return t.yc > y - spc * 0.7 && t.yc < grp[5] + spc * 0.7 && t.x0 > x0 - 2 && t.x0 < x1 + 2; };
+            var nDig = pg.text.filter(function (t) { return inS(t) && !isMusic(t) && /^[\s0-9xX()<>]+$/.test(t.s); }).length;
+            var nHead = pg.text.filter(function (t) { var c = glyphCode(t); return inS(t) && isMusic(t) && c >= 0xE0A0 && c <= 0xE0FF; }).length;
+            if (!nDig && nHead >= 2) { grp.forEach(function (g) { used[g] = 1; }); break; }
+          }
           staves.push({ top: y, sp: (grp[5] - y) / 5, bot: grp[5], x0: x0, x1: x1 }); grp.forEach(function (g) { used[g] = 1; }); break;
         }
       }
@@ -3014,6 +3024,10 @@ var PdfTab = (function () {
       });
     });
     var beams = pg.rects.filter(function (r) { return r.y1 - r.y0 < sp * 0.5 && r.x1 - r.x0 > sp * 0.16 && r.y0 > bot && r.y0 < bot + sp * 3.95; });
+    // rests written only in a notation staff above the tab (score + tab layouts leave them out of the tab)
+    var nLo = prevSt ? prevSt.bot + sp * 4.6 : top - sp * 16;
+    var nrest = OFF.pdfnrest ? [] : pg.text.filter(function (t) { var c = glyphCode(t); return isMusic(t) && (REST[c] || c === 0xE1E7 || (c >= 0xE080 && c <= 0xE089) || c === 0xE0A2 || c === 0xE0A3 || c === 0xE0A7 || c === 0xE0A8) && t.base > nLo && t.base < top - sp * 2 && t.x0 > st.x0 - 2 && t.x0 < st.x1 + 2; })
+      .map(function (t) { return { c: glyphCode(t), x0: t.x0, x1: t.x1, y: t.base }; });
     var gl = pg.text.filter(function (t) { return isMusic(t) && t.base > top - sp * 6.3 && t.base < bot + sp * 4.5; })
       .map(function (t) { return { c: glyphCode(t), x0: t.x0, x1: t.x1, y: t.base }; });
     var above = pg.text.filter(function (t) { return !isMusic(t) && t.base < top + sp * 0.2 && t.base > top - sp * 6.5 && (!prevSt || t.base > prevSt.bot + sp * 2.5); });
@@ -3024,7 +3038,7 @@ var PdfTab = (function () {
     var lab = pg.text.filter(function (t) { return !isMusic(t) && t.x0 < st.x0 - 1 && t.yc > top - sp && t.yc < bot + sp; });
     var vertical = lab.length > 2 && lab.every(function (t) { return Math.abs(t.x0 - lab[0].x0) < 1; });
     var name = lab.sort(function (a, b) { return vertical ? b.base - a.base : (a.base - b.base || a.x0 - b.x0); }).map(function (t) { return t.s; }).join('').trim();
-    return { st: st, bars: bars, toks: toks, stems: stems, beams: beams, gl: gl, above: above, below: below, diag: diag, dashes: dashes, name: name };
+    return { st: st, nrest: nrest, bars: bars, toks: toks, stems: stems, beams: beams, gl: gl, above: above, below: below, diag: diag, dashes: dashes, name: name };
   }
 
   /* ---------- one staff → bars of beats ---------- */
@@ -3094,16 +3108,31 @@ var PdfTab = (function () {
     });
     D.stems.forEach(function (s) { if (!beats.some(function (b) { return b.stem === s; })) beats.push({ x: s.x, notes: [], stem: s, tie: true }); });
     D.gl.forEach(function (g) { if (REST[g.c] && g.y > top - sp * 2 && g.y < bot + sp * 1.6) beats.push({ x: (g.x0 + g.x1) / 2, notes: [], stem: null, rest: REST[g.c], g: g }); });
+    (D.nrest || []).forEach(function (g) {
+      if (!REST[g.c]) return; var cx = (g.x0 + g.x1) / 2;
+      if (beats.some(function (b) { return (b.rest || !b.notes.length) && Math.abs(b.x - cx) < sp * 0.6; })) return;
+      var dot = D.nrest.some(function (d) { return d.c === 0xE1E7 && d.x0 - g.x1 > 0 && d.x0 - g.x1 < sp * 1.1 && Math.abs(d.y - g.y) < sp * 1.9; });
+      beats.push({ x: cx, notes: [], stem: null, rest: REST[g.c], g: g, nDot: dot });
+    });
     beats.sort(function (a, b) { return a.x - b.x; });
     var anyRhythm = D.stems.length > 0;
+    // hollow noteheads in a notation staff above: each belongs to the nearest note beat of the tab
+    (D.nrest || []).forEach(function (g) {
+      if (g.c !== 0xE0A3 && g.c !== 0xE0A2 && g.c !== 0xE0A7 && g.c !== 0xE0A8) return; var gx = (g.x0 + g.x1) / 2, best = null;
+      beats.forEach(function (b) { if (!b.notes.length) return; var dd = Math.abs(b.x - gx); if (!best || dd < best[0]) best = [dd, b]; });
+      if (best && best[0] < sp * 1.2) best[1].hollow = g.c;
+    });
     // durations (quarter = 1)
     beats.forEach(function (b) {
+      if (b.rest && b.nDot) { b.dur = b.rest * 1.5; return; }
       if (b.rest) { var dr = D.gl.some(function (g) { return g.c === 0xE1E7 && g.x0 - b.g.x1 > 0 && g.x0 - b.g.x1 < sp * 1.1 && Math.abs(g.y - b.g.y) < sp * 1.9; }); b.dur = b.rest * (dr ? 1.5 : 1); return; }
       var s = b.stem; if (!s) { b.dur = null; return; }
       var lv = {}; D.beams.forEach(function (bm) { if (bm.x0 - sp * 0.13 <= s.x && s.x <= bm.x1 + sp * 0.13) lv[Math.round(bm.y0 * 2) / 2] = 1; });
       var nl = Object.keys(lv).length, fl = D.gl.filter(function (g) { return FLAG[g.c] && Math.abs(g.x0 - s.x) < sp * 0.5 && (OFF.pdfflag || (g.y > s.y0 - sp && g.y < s.y1 + sp * 2)); })[0];
       var d = nl ? 0.5 / Math.pow(2, nl - 1) : fl ? FLAG[fl.c] : (s.y1 - s.y0 < sp * 1.41 ? 2 : 1);
       var dot = D.gl.some(function (g) { return g.c === 0xE1E7 && g.x0 - s.x > sp * 0.08 && g.x0 - s.x < sp * 1.1 && g.y > bot - sp * 0.6; });
+      // score + tab: a hollow notehead straight above in the notation staff says half (or whole) note
+      if (d === 1 && !OFF.pdfhead && b.hollow) { d = b.hollow === 0xE0A2 || b.hollow === 0xE0A7 ? 4 : 2; b.head = true; }
       b.dur = d * (dot ? 1.5 : 1); b.sl = (s.y1 - s.y0) / sp; b.nl = nl; b.fl = !!fl; b.dot = dot;
       b.stac = D.gl.some(function (g) { return g.c === 0xE4A2 && Math.abs((g.x0 + g.x1) / 2 - s.x) < sp * 0.5; });
       var trem = D.gl.filter(function (g) { return g.c >= 0xE220 && g.c <= 0xE224 && Math.abs((g.x0 + g.x1) / 2 - s.x) < sp * 0.6; })[0];
@@ -3187,7 +3216,10 @@ var PdfTab = (function () {
     var tempo = null;
     D.above.forEach(function (t, i) { if (t.s.trim() === '=') { var num = ''; D.above.filter(function (u) { return Math.abs(u.base - t.base) < 1 && u.x0 > t.x0 && u.x0 - t.x1 < 25; }).sort(function (a, b) { return a.x0 - b.x0; }).forEach(function (u) { if (/\d/.test(u.s)) num += u.s.replace(/\D/g, ''); }); if (num) tempo = { x: t.x0, bpm: parseInt(num, 10) }; } });
     // time signature glyphs (stacked digits E080–E089)
-    var tsg = D.gl.filter(function (g) { return g.c >= 0xE080 && g.c <= 0xE089; }).sort(function (a, b) { return a.x0 - b.x0 || a.y - b.y; });
+    var tsg = D.gl.filter(function (g) { return g.c >= 0xE080 && g.c <= 0xE089; });
+    // (score + tab: the time signature may be printed only in the notation staff above)
+    (D.nrest || []).forEach(function (g) { if (g.c >= 0xE080 && g.c <= 0xE089 && !tsg.some(function (h) { return Math.abs(h.x0 - g.x0) < 0.5 && Math.abs(h.y - g.y) < 0.5; })) tsg.push(g); });
+    tsg.sort(function (a, b) { return a.x0 - b.x0 || a.y - b.y; });
     var tsMarks = [];
     if (OFF.pdfts) { for (var z = 0; z + 1 < tsg.length; z++) if (Math.abs(tsg[z].x0 - tsg[z + 1].x0) < sp && tsg[z + 1].y > tsg[z].y + sp) { tsMarks.push({ x: tsg[z].x0, num: tsg[z].c - 0xE080, den: tsg[z + 1].c - 0xE080 }); z++; } }
     else {
@@ -3744,6 +3776,14 @@ var PhotoTab = (function () {
         var mc = grp.reduce(function (a2, g) { return a2 + rows[g].c; }, 0) / n, stray = false;
         for (q = i + 1; q < rows.length && rows[q].y < bot; q++) if (grp.indexOf(q) < 0 && rows[q].c > mc * 0.6 && Math.abs(rows[q].y - rows[grp[0]].y) > 2) { stray = true; break; }
         if (stray) continue;
+        // a notation staff plus a row of ledger lines is not a tab staff: tab lines all run about as far
+        if (n === 6 && !(typeof window !== 'undefined' && window.__omrOff && window.__omrOff.even6)) {
+          var cs6 = grp.map(function (g) { return rows[g].c; });
+          if (typeof window !== 'undefined' && window.__dbgRows) window.__dbgRows.push([Math.round(rows[i].y), +((rows[grp[5]].y - rows[i].y) / 5).toFixed(1), cs6.map(function (v) { return +v.toFixed(2); })]);
+          // (a ledger row can only be the first or last; a tab line full of numbers inside the staff can run short)
+          var mid6 = cs6.slice(1, 5).sort(function (a, b) { return a - b; }), med6 = (mid6[1] + mid6[2]) / 2;
+          if (cs6[0] < med6 * 0.45 || cs6[5] < med6 * 0.45) continue;
+        }
         // a 5-line group that is really part of a 6-line staff
         if (n === 5 && rows.some(function (r, q2) { return grp.indexOf(q2) < 0 && (Math.abs(r.y - (top - sp)) <= sp * 0.12 + 1 || Math.abs(r.y - (bot + sp)) <= sp * 0.12 + 1) && r.c > mc * 0.6; })) continue;
         var e0 = Math.min.apply(null, grp.map(function (g) { return rows[g].e[0]; })), e1 = Math.max.apply(null, grp.map(function (g) { return rows[g].e[1]; }));
@@ -3775,7 +3815,7 @@ var PhotoTab = (function () {
     // a notation staff right above a tab staff carries the rhythm: keep it with the strip
     tab.forEach(function (t) {
       var above = std.filter(function (s) { return s.bot < t.top && t.top - s.bot < t.sp * 9; }).pop();
-      if (above) t.notTop = above.top;
+      if (above) { t.notTop = above.top; t.notSp = above.sp; }
     });
     return tab;
   }
@@ -3936,7 +3976,7 @@ var PhotoTab = (function () {
       if (spMed && spMed < 17) {
         var k = Math.min(2.5, 24 / spMed); big = canvasOf(img, Math.round(big.width * k), deg, true); sc = big.width / mid.width;
       }
-      st = st.map(function (s) { return { top: s.top * sc, bot: s.bot * sc, sp: s.sp * sc, x0: s.x0 * sc, x1: s.x1 * sc, notTop: s.notTop != null ? s.notTop * sc : null }; });
+      st = st.map(function (s) { return { top: s.top * sc, bot: s.bot * sc, sp: s.sp * sc, x0: s.x0 * sc, x1: s.x1 * sc, notTop: s.notTop != null ? s.notTop * sc : null, notSp: s.notSp != null ? s.notSp * sc : null }; });
       var gray = enhance(big);
       gray.th = inkThreshold(gray, st);
       st.forEach(function (s) { refineExtent(gray, s); });
@@ -4324,6 +4364,13 @@ var LocalTab = (function () {
     var OFF = (typeof window !== 'undefined' && window.__omrOff) || {}, UP = !!opt.upStyle; // UP: this staff writes its rhythm above the numbers
     var W = G.w, H = G.h, g = G.g, sp = st.sp, TH = opt.th || 150, x, y, i, k;
     function dark(xx, yy) { return xx >= 0 && yy >= 0 && xx < W && yy < H && g[yy * W + xx] < TH; }
+    // ink that is not part of a thin horizontal line (staff lines of a notation staff whose exact rows are unknown)
+    function offHLine(xx, yy) {
+      if (!dark(xx, yy)) return 0;
+      var u = yy, d = yy, lim = Math.max(2, Math.round(sp * 0.09)); while (u > yy - lim - 1 && dark(xx, u - 1)) u--; while (d < yy + lim + 1 && dark(xx, d + 1)) d++;
+      if (d - u + 1 <= lim && dark(xx - 2, yy) && dark(xx + 2, yy) && dark(xx - 4, yy) && dark(xx + 4, yy)) return 0;
+      return 1;
+    }
     var SOFT = opt.soft != null ? opt.soft : 2;
     var gthr = TH;
     function ink(xx, yy) { if (xx < 0 || yy < 0 || xx >= W || yy >= H) return 0; var v = g[yy * W + xx]; return SOFT === 1 ? Math.max(0, Math.min(1, (215 - v) / 150)) : (v < gthr ? 1 : 0); }
@@ -4944,6 +4991,34 @@ var LocalTab = (function () {
       if (opt.dbgTs) opt.dbgTs.push({ bi: bi, bx: bx, gs: gs, gI: gI, up: up, dn: dn });
     });
 
+    // score + tab: the time signature may stand only in the notation staff above (after its clef)
+    if (!OFF.notts && ts[0] == null && st.notTop != null && st.notSp > 0 && barX.length) {
+      var nT2 = st.notTop, nS2 = st.notSp;
+      var nLine2 = function (yy) { for (var q7 = 0; q7 < 5; q7++) if (Math.abs(yy - (nT2 + q7 * nS2)) <= tt) return true; return false; };
+      var nclean2 = offHLine;
+      var inside = function (cx) { for (var cy = Math.round(nT2 + nS2 * 0.2); cy <= Math.round(nT2 + nS2 * 3.8); cy++) if (nclean2(cx, cy)) return true; return false; };
+      var outside = function (cx) { for (var cy = Math.round(nT2 - nS2 * 1.5); cy <= Math.round(nT2 - nS2 * 0.6); cy++) if (dark(cx, cy)) return true; for (cy = Math.round(nT2 + nS2 * 4.6); cy <= Math.round(nT2 + nS2 * 5.5); cy++) if (dark(cx, cy)) return true; return false; };
+      var xs7 = Math.round(barX[0] + nS2 * 2.2), xe7 = Math.round(Math.min(barX[1] || X1, barX[0] + nS2 * 14)), found7 = null;
+      if (opt.dbgTs) { var cf = ''; for (var xq7 = xs7; xq7 <= xe7; xq7++) cf += inside(xq7) ? (outside(xq7) ? 'B' : 'i') : (outside(xq7) ? 'o' : '.'); opt.dbgTs.push({ notcols: [xs7, xe7, barX.slice(0, 3), cf] }); }
+      for (var x7 = xs7; x7 <= xe7 && !found7; x7++) {
+        if (!inside(x7) || outside(x7)) continue;
+        var a7 = x7; while (x7 + 1 <= xe7 && inside(x7 + 1) && !outside(x7 + 1)) x7++;
+        var w7 = x7 - a7 + 1; if (w7 < nS2 * 0.8 || w7 > nS2 * 2.6) continue;
+        var rd7 = function (y0, y1) {
+          var qa = 1e9, qb = -1, pa = 1e9, pb = -1;
+          for (var xx = a7; xx <= x7; xx++) for (var yy = Math.round(y0); yy <= Math.round(y1); yy++) if (nclean2(xx, yy)) { if (yy < qa) qa = yy; if (yy > qb) qb = yy; if (xx < pa) pa = xx; if (xx > pb) pb = xx; }
+          if (qb < 0 || qb - qa < nS2 * 1.2) return null;
+          return classify(vec(function (gx, gy) { return nclean2(pa + gx, qa + gy); }, pb - pa + 1, qb - qa + 1), TPL_L);
+        };
+        var up7 = rd7(nT2 - nS2 * 0.3, nT2 + nS2 * 2 - 1), dn7 = rd7(nT2 + nS2 * 2 + 1, nT2 + nS2 * 4.3);
+        if (opt.dbgTs) opt.dbgTs.push({ nota: [a7, x7], up: up7, dn: dn7 });
+        var okTs7 = function (u, d) { return d === '4' ? /^[2-7]$/.test(u) : d === '8' ? /^[35679]$/.test(u) : d === '2' ? /^[234]$/.test(u) : false; };
+        if (up7 && dn7 && /^(2|4|8)$/.test(dn7.s) && !okTs7(up7.s, dn7.s) && up7.s2 && okTs7(up7.s2, dn7.s) && up7.margin < 0.12) up7 = { s: up7.s2, score: up7.score - up7.margin, margin: 0 }; // a bold 3 reads close to 8
+        if (up7 && dn7 && up7.score > 0.55 && dn7.score > 0.55 && okTs7(up7.s, dn7.s)) found7 = up7.s + '/' + dn7.s;
+      }
+      if (found7) ts[0] = found7;
+    }
+
     // the TAB clef at the start of every system: three big letters stacked over the staff. Its letters are taller
     // than any fret number (long unbroken vertical strokes in the top and bottom thirds); everything up to the first
     // clear gap after them is clef, not notes or rests
@@ -5091,6 +5166,31 @@ var LocalTab = (function () {
           return mg.some(function (q) { return q !== r && Math.abs((q.x - n.x) - d) < sp * 0.3 && Math.sign(q.x - n.x) === Math.sign(d) && (OFF.circ2 || Math.abs(q.h - r.h) < 0.35); });
         });
       });
+      // score + tab: the rests may be written only in the notation staff above (none in the tab)
+      if (!OFF.notrest && st.notTop != null && st.notSp > 0 && TPL_R && TPL_R.length) {
+        var nT = st.notTop, nS = st.notSp;
+        var nLine = function (yy) { for (var q6 = 0; q6 < 5; q6++) if (Math.abs(yy - (nT + q6 * nS)) <= tt) return true; return false; };
+        var nclean = offHLine;
+        var prof2 = new Uint8Array(W), x6;
+        for (x6 = Math.max(X0, Math.round(startX + sp * 0.4)); x6 <= X1; x6++) {
+          if (barCol[x6] || barCol[x6 - 1] || barCol[x6 + 1]) continue;
+          var c6 = 0; for (var y6 = Math.round(nT + nS * 0.6); y6 <= Math.round(nT + nS * 3.4); y6++) if (nclean(x6, y6)) c6++;
+          if (c6 >= nS * 0.3) prof2[x6] = 1;
+        }
+        for (x6 = X0; x6 <= X1; x6++) if (prof2[x6]) {
+          var a6 = x6; while (x6 + 1 <= X1 && (prof2[x6 + 1] || prof2[x6 + 2])) x6++;
+          var cx6 = (a6 + x6) / 2, w6 = x6 - a6 + 1;
+          if (w6 < nS * 0.4 || w6 > nS * 1.6) continue;
+          if (notes.some(function (n) { return Math.abs(n.x - cx6) < sp * 0.9; }) || mg.some(function (r) { return Math.abs(r.x - cx6) < sp * 0.6; })) continue;
+          var qa6 = 1e9, qb6 = -1, pa6 = 1e9, pb6 = -1;
+          for (var xx6 = a6 - 2; xx6 <= x6 + 2; xx6++) for (var yy6 = Math.round(nT - nS * 0.5); yy6 <= Math.round(nT + nS * 4.5); yy6++) if (nclean(xx6, yy6)) { if (yy6 < qa6) qa6 = yy6; if (yy6 > qb6) qb6 = yy6; if (xx6 < pa6) pa6 = xx6; if (xx6 > pb6) pb6 = xx6; }
+          if (qb6 - qa6 < nS * 0.8) continue;
+          var c7r = classify(vec(function (gx, gy) { return nclean(pa6 + gx, qa6 + gy); }, pb6 - pa6 + 1, qb6 - qa6 + 1), TPL_R);
+          if (opt.dbgRests) opt.dbgRests.push(['nota', Math.round(cx6), c7r.s, +c7r.score.toFixed(2)]);
+          if (c7r.score >= 0.7) mg.push({ x: cx6, h: (qb6 - qa6) / sp, a: a6, b: x6, units: +c7r.s, nota: true });
+        }
+        mg.sort(function (p2, q2) { return p2.x - q2.x; });
+      }
       if (opt.dbgRests) opt.dbgRests.push(['final'].concat(mg.map(function (r) { return [Math.round(r.x), +r.h.toFixed(2), r.units || 0]; })));
       return mg;
     }
