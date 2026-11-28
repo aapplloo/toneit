@@ -4590,6 +4590,14 @@ var LocalTab = (function () {
           if ((t0 !== ya3 || t1 !== yb3) && wide >= sp * 0.35 && !thinAll) { ya3 = t0; yb3 = t1; }
         }
         var hh = yb3 - ya3 + 1;
+        // too tall for a number, but split by a blank row: the part across the line is the number, the rest is a
+        // separate thing above or below it (the stem under the lowest note of a big chord)
+        if (!OFF.gapcut && hh > sp * 0.97) {
+          var rcg = function (yr) { for (var xr = a0; xr <= b0; xr++) if (dark(xr, yr)) return 1; return 0; };
+          for (yy = Math.round(lyc + sp * 0.25); yy < yb3; yy++) if (Math.abs(yy - lyc) > tt && !rcg(yy)) { yb3 = yy - 1; break; }
+          for (yy = Math.round(lyc - sp * 0.25); yy > ya3; yy--) if (Math.abs(yy - lyc) > tt && !rcg(yy)) { ya3 = yy + 1; break; }
+          hh = yb3 - ya3 + 1;
+        }
         if (opt.dbgRun) opt.dbgRun.push([i, a0, b0, 'ext', Math.round(lyc), Math.round(cutA[0]), cutA[1], Math.round(yTopC), ya3, yb3]);
         // a solid little block on a line is a whole/half rest, not a number (an 8 has holes)
         if (!OFF.block && hh <= sp * 0.55 && b0 - a0 + 1 >= sp * 0.35 && b0 - a0 + 1 <= sp * 1.0) {
@@ -4687,10 +4695,14 @@ var LocalTab = (function () {
           }
           // a 1 has a flag (and often a foot): a plain bar of even width is a stem drawn through the staff between
           // the notes of a chord (some engravers do that)
-          if (!OFF.bar1 && cl.s === '1' && w <= Math.max(4, sp * 0.2)) {
-            var wmin = 1e9, wmax = 0, rows7 = 0; for (var ry7 = qa; ry7 <= qb; ry7++) { if (Math.abs(ry7 - lyc) <= tt) continue; var c7 = 0; for (var rx7 = pa; rx7 <= pb; rx7++) if (ink(rx7, ry7) > 0.5) c7++; if (!c7) continue; rows7++; wmin = Math.min(wmin, c7); wmax = Math.max(wmax, c7); }
-            if (opt.dbgRound) opt.dbgRound.push([pa, 'bar1', w, h, +(w / sp).toFixed(3), wmin, wmax, rows7, +cl.score.toFixed(2), Math.round(qa - lyc), Math.round(qb - lyc)]);
-            if (rows7 >= 8 && wmax - wmin <= (rows7 >= 12 ? 1 : 0)) cl = { s: cl.s, score: 0.3, margin: 0, s2: cl.s2 };
+          var brk = !OFF.bar1br && (cl.s === '(' || cl.s === ')');
+          if (!OFF.bar1 && (cl.s === '1' || brk) && w <= Math.max(4, sp * (OFF.bar1w2 ? 0.2 : 0.28))) {
+            var wmin = 1e9, wmax = 0, rows7 = 0, lmin = 1e9, lmax = -1e9; for (var ry7 = qa; ry7 <= qb; ry7++) { if (Math.abs(ry7 - lyc) <= tt) continue; var c7 = 0, l7 = -1; for (var rx7 = pa; rx7 <= pb; rx7++) if (ink(rx7, ry7) > 0.5) { c7++; if (l7 < 0) l7 = rx7; } if (!c7) continue; rows7++; wmin = Math.min(wmin, c7); wmax = Math.max(wmax, c7); lmin = Math.min(lmin, l7); lmax = Math.max(lmax, l7); }
+            if (opt.dbgRound) opt.dbgRound.push([pa, 'bar1', w, h, +(w / sp).toFixed(3), wmin, wmax, rows7, +cl.score.toFixed(2), Math.round(qa - lyc), Math.round(qb - lyc), cl.s, lmax - lmin]);
+            // (a bracket must also be dead straight: a real one curves)
+            // (at a large size the stem's anti-aliased edges wobble by a pixel or two; a 1's flag is far wider)
+            var tol7 = rows7 >= 12 ? (OFF.bar1w ? 1 : Math.max(1, Math.round(sp * 0.055))) : 0;
+            if (rows7 >= 8 && wmax - wmin <= tol7 && (!brk || lmax - lmin <= (tol7 > 1 ? 1 : 0)) && (tol7 <= 1 || lmax - lmin <= 1)) cl = { s: cl.s, score: 0.3, margin: 0, s2: cl.s2 };
           }
           // a digit other than 1 is wide somewhere (off the line): a thin slanted stroke crossing the line is an arrow
           if (!OFF.stroke && /^[02-9]$/.test(cl.s) && cl.score < 0.72) {
@@ -5003,12 +5015,40 @@ var LocalTab = (function () {
           if (bot5 - top5 >= sp * 0.9 && bot5 - top5 <= sp * 3.0) out.push({ x: (a5 + x2) / 2, h: (bot5 - top5) / sp, a: a5, b: x2 }); // taller than any rest: the TAB clef
         }
       }
+      // half / whole rests: a small solid block standing on a line (half) or hanging from it (whole) — too flat for
+      // the height test above
+      if (!OFF.restblk) for (var lb = 1; lb <= 4; lb++) {
+        var runA = -1, hs = [], side = 0;
+        for (x2 = Math.max(X0, Math.round(startX + sp * 0.4)); x2 <= X1 + 1; x2++) {
+          var hh = 0, sd = 0;
+          if (x2 <= X1 && !barCol[x2]) {
+            var lyb = lineY(lb, x2), upN = 0, dnN = 0, yy3;
+            for (yy3 = Math.round(lyb - tt - 1); yy3 >= lyb - sp * 0.75; yy3--) { if (dark(x2, yy3)) upN++; else break; }
+            for (yy3 = Math.round(lyb + tt + 1); yy3 <= lyb + sp * 0.75; yy3++) { if (dark(x2, yy3)) dnN++; else break; }
+            if (upN >= sp * 0.22 && upN <= sp * 0.6 && dnN < sp * 0.1) { hh = upN; sd = 1; } else if (dnN >= sp * 0.22 && dnN <= sp * 0.6 && upN < sp * 0.1) { hh = dnN; sd = -1; }
+          }
+          if (hh && (runA < 0 || sd === side)) { if (runA < 0) { runA = x2; hs = []; side = sd; } hs.push(hh); continue; }
+          if (runA >= 0) {
+            var wb = x2 - runA, hmin = Math.min.apply(null, hs), hmax = Math.max.apply(null, hs), cxb = runA + wb / 2;
+            if (wb >= sp * 0.5 && wb <= sp * 1.3 && hmax - hmin <= Math.max(2, sp * 0.12) && !notes.some(function (n) { return Math.abs(n.x - cxb) < sp * 0.75; })) {
+              // nothing standing on it or under it (a digit's body is not a flat solid block)
+              var yEdge = side > 0 ? Math.round(lineY(lb, cxb) - tt - 1 - hmax - 2) : Math.round(lineY(lb, cxb) + tt + 1 + hmax + 2), clear = 0;
+              for (var xe = runA; xe < x2; xe++) if (!dark(xe, yEdge)) clear++;
+              if (clear >= wb * 0.8) out.push({ x: cxb, h: hmax / sp, a: runA, b: x2 - 1, units: side > 0 ? 8 : 16, block: true });
+            }
+            runA = -1; hs = [];
+            if (hh) { runA = x2; hs = [hh]; side = sd; }
+          }
+        }
+      }
+      out.sort(function (p2, q2) { return p2.x - q2.x; });
       // one rest can fall apart into two blobs (the zigzag of a quarter rest): join close neighbours
       var mg = [];
-      out.forEach(function (r) { var l = mg[mg.length - 1]; if (l && r.x - l.x < sp * 0.9) { l.x = (l.x + r.x) / 2; l.h = Math.max(l.h, r.h); l.b = r.b; } else mg.push({ x: r.x, h: r.h, a: r.a, b: r.b }); });
+      out.forEach(function (r) { var l = mg[mg.length - 1]; if (l && r.x - l.x < sp * 0.9 && !r.block && !l.block) { l.x = (l.x + r.x) / 2; l.h = Math.max(l.h, r.h); l.b = r.b; } else if (l && r.x - l.x < sp * 0.9) { if (r.block && !l.block) { mg[mg.length - 1] = { x: r.x, h: r.h, a: r.a, b: r.b, units: r.units, block: true }; } } else mg.push(r.block ? { x: r.x, h: r.h, a: r.a, b: r.b, units: r.units, block: true } : { x: r.x, h: r.h, a: r.a, b: r.b }); });
       if (opt.dbgRests) opt.dbgRests.push(mg.map(function (r) { return [Math.round(r.x), +r.h.toFixed(2)]; }), out.map(function (r) { return [Math.round(r.x), +r.h.toFixed(2)]; }));
       // which rest it is, from its shape (quarter zigzag, 8th/16th hooks), and a dot after it
       if (!OFF.restshape && TPL_R && TPL_R.length) mg.forEach(function (r) {
+        if (r.block) return;
         var xa = Math.round(r.a - 2), xb = Math.round(r.b + 2), ya = Math.round(lineY(0, r.a) - sp * 0.4), yb = Math.round(lineY(5, r.a) + sp * 0.4);
         var clean = function (cx, cy) { if (!dark(cx, cy)) return 0; for (var li = 0; li < 6; li++) { var ly = lineY(li, cx); if (Math.abs(cy - ly) <= tt && !dark(cx, ly - tt - 1) && !dark(cx, ly + tt + 1)) return 0; } return 1; };
         var qa = 1e9, qb = -1, pa = 1e9, pb = -1, cx, cy;
@@ -5033,9 +5073,11 @@ var LocalTab = (function () {
       if (!OFF.circ) mg = mg.filter(function (r) {
         return !notes.some(function (n) {
           var d = n.x - r.x; if (Math.abs(d) > sp * 1.7) return false;
-          return mg.some(function (q) { return q !== r && Math.abs((q.x - n.x) - d) < sp * 0.3 && Math.sign(q.x - n.x) === Math.sign(d); });
+          // (the two sides of one circle match in height; two different rests either side of a note don't)
+          return mg.some(function (q) { return q !== r && Math.abs((q.x - n.x) - d) < sp * 0.3 && Math.sign(q.x - n.x) === Math.sign(d) && (OFF.circ2 || Math.abs(q.h - r.h) < 0.35); });
         });
       });
+      if (opt.dbgRests) opt.dbgRests.push(['final'].concat(mg.map(function (r) { return [Math.round(r.x), +r.h.toFixed(2), r.units || 0]; })));
       return mg;
     }
 
@@ -5214,6 +5256,7 @@ var LocalTab = (function () {
       // (its dots can come apart from the stroke: take everything near the middle together)
       var rpA = Math.min.apply(null, inRests.map(function (r) { return r.a; })), rpB = Math.max.apply(null, inRests.map(function (r) { return r.b; }));
       var rpt = !inBar.length && inRests.length >= 1 && inRests.length <= 3 && rpB - rpA + 1 >= sp * 0.9 && rpB - rpA < sp * 2.2 && Math.abs((rpA + rpB) / 2 - (L0 + R0) / 2) < (R0 - L0) * 0.2;
+      if (opt.dbgRests) opt.dbgRests.push(['bar', Math.round(L0), Math.round(R0), inRests.map(function (r) { return Math.round(r.x); }), rpt]);
       if (!rpt) inRests.forEach(function (r) {
         // rhythm slash: a slanted stroke in the middle of the staff with a stem running down out of it — strum the
         // previous chord again in that rhythm (a note's stem starts under the staff, a slash's starts inside it)
@@ -5264,6 +5307,21 @@ var LocalTab = (function () {
     });
     qGaps.sort(function (a2, b2) { return a2 - b2; });
     var qGap = qGaps.length >= 2 ? qGaps[qGaps.length >> 1] : 0;
+    // no bar that adds up with plain quarters: take the quarter's room from the shorter notes instead (room grows
+    // about 1.4x per doubling of the length), counting only beats whose length the stem and beams fix
+    if (!qGap && !OFF.qgap2) {
+      var qEst = [];
+      outBars.forEach(function (bar) {
+        bar.beats.forEach(function (b, j) {
+          if (b.rest || !b.stem || b.stem.up || j === bar.beats.length - 1) return;
+          var bm = beamsAt(b.stem); if (!bm.beams) return;
+          var d = durOf(b, medStem, medUp); if (!(d > 0 && d < 1)) return;
+          qEst.push((bar.beats[j + 1].x - b.x) / Math.pow(d, 0.5));
+        });
+      });
+      qEst.sort(function (a2, b2) { return a2 - b2; });
+      if (qEst.length >= 4) qGap = qEst[qEst.length >> 1];
+    }
     var prevOut = null;
     var bars2 = outBars.map(function (bar) {
       var tsp = bar.ts.split('/'), len = (+tsp[0]) * 4 / (+tsp[1]);
@@ -5288,9 +5346,11 @@ var LocalTab = (function () {
       if (!(staffStems >= 0)) staffStems = stemLens.length + stemLensUp.length >= 3 ? 1 : 0; // (barOut runs before this declaration line is reached)
       // in a staff that writes its rhythm, a lone "number" with no stem that stands much taller than a digit is a
       // rest sign (a quarter-rest zigzag reads as a 1)
+      // (a rest's slanted stroke can pass for a stem drawn up from it, in a staff whose stems all go down)
+      var downStaff = !OFF.restup && stemLens.length >= 6 && stemLensUp.length * 4 <= stemLens.length;
       if (staffStems && !OFF.restglyph) bar.beats.forEach(function (b) {
-        if (b.stem || b.rest || b.slash || b.n.length !== 1) return;
-        var ext = inkExtent(b.x); b.ext = +(ext / sp).toFixed(2); if (ext >= sp * 1.15) { b.rest = true; b.rh = ext / sp; b.n = []; }
+        if ((b.stem && !(downStaff && b.stem.up)) || b.rest || b.slash || b.n.length !== 1) return;
+        var ext = inkExtent(b.x); b.ext = +(ext / sp).toFixed(2); if (ext >= sp * 1.15) { b.rest = true; b.rh = ext / sp; b.n = []; b.stem = null; }
       });
       var q = bar.beats.map(function (b) {
         if (b.rest) return b.ru && OFF.restfixon ? b.ru / 4 : null; // a rest whose shape read clearly keeps its own length
@@ -5312,7 +5372,10 @@ var LocalTab = (function () {
           var cands2 = [];
           bar.beats.forEach(function (b, j) { if (b.rest || q[j] !== 1 || !b.stem || b.stem.up || beamsAt(b.stem).beams) return; var nx = j < bar.beats.length - 1 ? bar.beats[j + 1].x : bar.R - sp * 0.3; cands2.push([j, (nx - b.x) / qGap]); });
           cands2.sort(function (p2, q2) { return q2[1] - p2[1]; });
-          cands2.forEach(function (c2) { if (m2 >= 0.99 && c2[1] >= 1.22) { q[c2[0]] = 2; sum += 1; m2 -= 1; } });
+          if (opt.dbgHalf) opt.dbgHalf.push({ hr2: cands2.map(function (c2) { return [Math.round(bar.beats[c2[0]].x), +c2[1].toFixed(2)]; }), R: Math.round(bar.R) });
+          // (rests whose shapes all read clearly leave no doubt the time is missing: ask for less room)
+          var thr2 = !OFF.hrtyped && rests.every(function (b) { return b.ru; }) ? 1.1 : 1.22;
+          cands2.forEach(function (c2) { if (m2 >= 0.99 && c2[1] >= thr2) { q[c2[0]] = 2; sum += 1; m2 -= 1; } });
         }
       }
       if (noteQ && rests.length) {
