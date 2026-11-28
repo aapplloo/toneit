@@ -2909,6 +2909,7 @@ var PdfTab = (function () {
               if (!poly.length) return;
               var xs = poly.map(function (p) { return p[0]; }), ys = poly.map(function (p) { return p[1]; });
               var bb = { x0: Math.min.apply(null, xs), x1: Math.max.apply(null, xs), y0: Math.min.apply(null, ys), y1: Math.max.apply(null, ys) };
+              if (!hasCurve && poly.length >= 3 && poly.length <= 12) bb.pts = poly.slice(); // (slanted beams: keep the shape)
               (hasCurve ? curves : rects).push(bb); poly = []; hasCurve = false;
             }
           }
@@ -3028,6 +3029,25 @@ var PdfTab = (function () {
     var nLo = prevSt ? prevSt.bot + sp * 4.6 : top - sp * 16;
     var nrest = OFF.pdfnrest ? [] : pg.text.filter(function (t) { var c = glyphCode(t); return isMusic(t) && (REST[c] || c === 0xE1E7 || (c >= 0xE080 && c <= 0xE089) || c === 0xE0A2 || c === 0xE0A3 || c === 0xE0A7 || c === 0xE0A8) && t.base > nLo && t.base < top - sp * 2 && t.x0 > st.x0 - 2 && t.x0 < st.x1 + 2; })
       .map(function (t) { return { c: glyphCode(t), x0: t.x0, x1: t.x1, y: t.base }; });
+    // the notation staff's own rhythm (heads, stems, beams, flags, dots): used when the tab draws no rhythm
+    var notn = null;
+    if (!OFF.pdfnotn) {
+      var nHi = top - sp * 1.2, nLo2 = prevSt ? prevSt.bot + sp * 2.6 : nLo, inN = function (y) { return y > nLo2 && y < nHi; }; // (beams can rise well above the notation staff)
+      var heads = pg.text.filter(function (t) { var c = glyphCode(t); return isMusic(t) && inN(t.base) && t.x0 > st.x0 - 2 && t.x0 < st.x1 + 2 && ((c >= 0xE0A2 && c <= 0xE0A4) || (c >= 0xE0A7 && c <= 0xE0AA)); })
+        .map(function (t) { var c = glyphCode(t); return { c: c, x0: t.x0, x1: t.x1, xc: (t.x0 + t.x1) / 2, y: t.base, dur: c === 0xE0A2 || c === 0xE0A7 ? 4 : c === 0xE0A3 || c === 0xE0A8 ? 2 : 1 }; });
+      if (heads.length) {
+        var hl = pg.lines.filter(function (l) { return l.y1 - l.y0 < 0.4 && l.x1 - l.x0 > (st.x1 - st.x0) * 0.3 && inN(l.y0); }).map(function (l) { return Math.round(l.y0 * 10) / 10; }).sort(function (a, b) { return a - b; });
+        var dfs = []; for (var hq = 1; hq < hl.length; hq++) { var dd2 = hl[hq] - hl[hq - 1]; if (dd2 > 2 && dd2 < 20) dfs.push(dd2); } dfs.sort(function (a, b) { return a - b; });
+        var nsp = dfs.length ? dfs[dfs.length >> 1] : sp * 0.7;
+        notn = {
+          nsp: nsp, heads: heads,
+          stems: pg.lines.filter(function (l) { return l.x1 - l.x0 < 0.4 && l.w < nsp * 0.25 && l.y1 - l.y0 > nsp * 1.5 && l.y1 - l.y0 < nsp * 16 && inN((l.y0 + l.y1) / 2); }).map(function (l) { return { x: l.x0, y0: l.y0, y1: l.y1 }; }),
+          beams: pg.rects.filter(function (r) { var yr = beamAt(r, r.x0), hh2 = yr[1] - yr[0]; return hh2 > nsp * 0.3 && hh2 < nsp * 1.0 && r.x1 - r.x0 > nsp * 0.5 && inN(r.y0); }),
+          flags: pg.text.filter(function (t) { return isMusic(t) && FLAG[glyphCode(t)] && inN(t.base); }).map(function (t) { return { c: glyphCode(t), x0: t.x0, y: t.base }; }),
+          dots: pg.text.filter(function (t) { return isMusic(t) && glyphCode(t) === 0xE1E7 && inN(t.base); }).map(function (t) { return { x0: t.x0, y: t.base }; })
+        };
+      }
+    }
     var gl = pg.text.filter(function (t) { return isMusic(t) && t.base > top - sp * 6.3 && t.base < bot + sp * 4.5; })
       .map(function (t) { return { c: glyphCode(t), x0: t.x0, x1: t.x1, y: t.base }; });
     var above = pg.text.filter(function (t) { return !isMusic(t) && t.base < top + sp * 0.2 && t.base > top - sp * 6.5 && (!prevSt || t.base > prevSt.bot + sp * 2.5); });
@@ -3038,17 +3058,59 @@ var PdfTab = (function () {
     var lab = pg.text.filter(function (t) { return !isMusic(t) && t.x0 < st.x0 - 1 && t.yc > top - sp && t.yc < bot + sp; });
     var vertical = lab.length > 2 && lab.every(function (t) { return Math.abs(t.x0 - lab[0].x0) < 1; });
     var name = lab.sort(function (a, b) { return vertical ? b.base - a.base : (a.base - b.base || a.x0 - b.x0); }).map(function (t) { return t.s; }).join('').trim();
-    return { st: st, nrest: nrest, bars: bars, toks: toks, stems: stems, beams: beams, gl: gl, above: above, below: below, diag: diag, dashes: dashes, name: name };
+    return { st: st, notn: notn, nrest: nrest, bars: bars, toks: toks, stems: stems, beams: beams, gl: gl, above: above, below: below, diag: diag, dashes: dashes, name: name };
   }
 
   /* ---------- one staff → bars of beats ---------- */
   function pg_lines(D) { return D.dashes; }
+  // vertical extent of a filled beam at x (a slanted parallelogram keeps its outline in .pts)
+  function beamAt(bm, x) {
+    if (!bm.pts) return [bm.y0, bm.y1];
+    var L = bm.pts.filter(function (p) { return Math.abs(p[0] - bm.x0) < 0.6; }), R = bm.pts.filter(function (p) { return Math.abs(p[0] - bm.x1) < 0.6; });
+    if (!L.length || !R.length || bm.x1 - bm.x0 < 0.5) return [bm.y0, bm.y1];
+    var ly = L.map(function (p) { return p[1]; }), ry = R.map(function (p) { return p[1]; }), t = (x - bm.x0) / (bm.x1 - bm.x0);
+    var l0 = Math.min.apply(null, ly), l1 = Math.max.apply(null, ly), r0 = Math.min.apply(null, ry), r1 = Math.max.apply(null, ry);
+    return [l0 + t * (r0 - l0), l1 + t * (r1 - l1)];
+  }
+  // a tab beat's length read from the notation staff above it: head type, then stem + beams / flag, then a dot
+  function notnDur(N, b, sp) {
+    var OFF2 = (typeof window !== 'undefined' && window.__omrOff) || {};
+    var ns = N.nsp, near = N.heads.filter(function (h) { return Math.abs(h.xc - b.x) < sp * 1.1; });
+    if (!near.length) return null;
+    var best = near.reduce(function (a, h) { return Math.abs(h.xc - b.x) < Math.abs(a.xc - b.x) ? h : a; });
+    // the stem standing on that head (at its left or right edge), then every head on that stem is the chord
+    var st2 = null, sd = 1e9;
+    N.stems.forEach(function (sm) {
+      if (sm.x < best.x0 - 1.2 || sm.x > best.x1 + 1.2 || best.y < sm.y0 - ns * 0.9 || best.y > sm.y1 + ns * 0.9) return;
+      var e = Math.min(Math.abs(sm.x - best.x0), Math.abs(sm.x - best.x1)); if (e < sd) { sd = e; st2 = sm; }
+    });
+    var grp = st2 ? N.heads.filter(function (h) { return st2.x >= h.x0 - 1.2 && st2.x <= h.x1 + 1.2 && h.y >= st2.y0 - ns * 0.9 && h.y <= st2.y1 + ns * 0.9; }) : N.heads.filter(function (h) { return Math.abs(h.xc - best.xc) < ns * 0.6; });
+    if (!grp.length) grp = [best];
+    var d = Math.max.apply(null, grp.map(function (h) { return h.dur; }));
+    if (d === 1 && st2) {
+      // (a stub beam of a neighbouring note ends a little short of this stem, unlike the full beams here)
+      var cb = N.beams.filter(function (bm) { return bm.x0 - 1 <= st2.x && st2.x <= bm.x1 + 1; });
+      var sx0 = cb.filter(function (bm) { return Math.abs(bm.x0 - st2.x) < 1.5; }).map(function (bm) { return bm.x0; }), sx1 = cb.filter(function (bm) { return Math.abs(bm.x1 - st2.x) < 1.5; }).map(function (bm) { return bm.x1; });
+      var mX0 = sx0.length ? Math.min.apply(null, sx0) : 0, mX1 = sx1.length ? Math.max.apply(null, sx1) : 0;
+      if (!OFF2.pdfstub) cb = cb.filter(function (bm) { return !(Math.abs(bm.x0 - st2.x) < 1.5 && bm.x0 > mX0 + 0.5) && !(Math.abs(bm.x1 - st2.x) < 1.5 && bm.x1 < mX1 - 0.5); });
+      // beam levels: distinct beams crossing the stem (centres apart by more than half a beam)
+      var cys = []; cb.forEach(function (bm) { var yr = beamAt(bm, Math.max(bm.x0, Math.min(bm.x1, st2.x))); if (yr[1] >= st2.y0 - ns * 0.6 && yr[0] <= st2.y1 + ns * 0.6) cys.push((yr[0] + yr[1]) / 2); });
+      cys.sort(function (a, b) { return a - b; }); var lv = {}, lastC = -1e9, nlv = 0; cys.forEach(function (c) { if (c - lastC > ns * 0.35) { nlv++; lv[nlv] = 1; } lastC = c; });
+      var nl = Object.keys(lv).length, fl = N.flags.filter(function (f) { return Math.abs(f.x0 - st2.x) < ns * 0.8 && f.y > st2.y0 - ns && f.y < st2.y1 + ns * 2; })[0];
+      d = nl ? 0.5 / Math.pow(2, nl - 1) : fl ? FLAG[fl.c] : 1;
+    }
+    if (typeof window !== 'undefined' && window.__notnDbg) window.__notnDbg.push({ bx: b.x, grp: grp.map(function (h) { return [h.xc, h.y, h.dur]; }), st2: st2 ? [st2.x, st2.y0, st2.y1] : null, d: d, nb: typeof lv !== 'undefined' && lv ? Object.keys(lv) : [] });
+    // a dead note's X head looks the same on a quarter and a half: the bar's length decides later
+    if (d === 1 && grp.some(function (h) { return h.c === 0xE0AA; })) b.ambig = true;
+    var dot = N.dots.some(function (t) { return grp.some(function (h) { return t.x0 > h.x1 - 0.5 && t.x0 - h.x1 < ns * 1.6 && Math.abs(t.y - h.y) < ns * 0.9; }); });
+    return d * (dot ? 1.5 : 1);
+  }
   // some engravers (alphaTab) draw half-note stems in tab exactly like quarter stems: when a bar comes up short,
   // lengthen plain-stem notes, choosing the ones whose spacing looks longest (spacing grows ~ duration^0.35)
-  function halfFill(bb, deficit, xEnd, sp) {
+  function halfFill(bb, deficit, xEnd, sp, ambigOnly) {
     var cand = [], opts = [];
     bb.forEach(function (b, i) {
-      if (b.rest || !b.stem || b.nl || b.fl || b.tup) return;
+      if (ambigOnly ? !b.ambig : (b.rest || !b.stem || b.nl || b.fl || b.tup)) return;
       var o = b.dur === 1 ? [1, 1.5, 2, 3, 4] : b.dur === 1.5 ? [1.5, 3] : null;
       if (o) { cand.push(i); opts.push(o); }
     });
@@ -3115,7 +3177,7 @@ var PdfTab = (function () {
       beats.push({ x: cx, notes: [], stem: null, rest: REST[g.c], g: g, nDot: dot });
     });
     beats.sort(function (a, b) { return a.x - b.x; });
-    var anyRhythm = D.stems.length > 0;
+    var anyRhythm = D.stems.length > 0 || !!(D.notn && D.notn.heads.length);
     // hollow noteheads in a notation staff above: each belongs to the nearest note beat of the tab
     (D.nrest || []).forEach(function (g) {
       if (g.c !== 0xE0A3 && g.c !== 0xE0A2 && g.c !== 0xE0A7 && g.c !== 0xE0A8) return; var gx = (g.x0 + g.x1) / 2, best = null;
@@ -3126,7 +3188,8 @@ var PdfTab = (function () {
     beats.forEach(function (b) {
       if (b.rest && b.nDot) { b.dur = b.rest * 1.5; return; }
       if (b.rest) { var dr = D.gl.some(function (g) { return g.c === 0xE1E7 && g.x0 - b.g.x1 > 0 && g.x0 - b.g.x1 < sp * 1.1 && Math.abs(g.y - b.g.y) < sp * 1.9; }); b.dur = b.rest * (dr ? 1.5 : 1); return; }
-      var s = b.stem; if (!s) { b.dur = null; return; }
+      var s = b.stem; if (!s && b.notes.length && D.notn && !D.stems.length) { b.dur = notnDur(D.notn, b, sp); if (b.dur) b.fromNotn = true; b.sl = -1; return; }
+      if (!s) { b.dur = null; return; }
       var lv = {}; D.beams.forEach(function (bm) { if (bm.x0 - sp * 0.13 <= s.x && s.x <= bm.x1 + sp * 0.13) lv[Math.round(bm.y0 * 2) / 2] = 1; });
       var nl = Object.keys(lv).length, fl = D.gl.filter(function (g) { return FLAG[g.c] && Math.abs(g.x0 - s.x) < sp * 0.5 && (OFF.pdfflag || (g.y > s.y0 - sp && g.y < s.y1 + sp * 2)); })[0];
       var d = nl ? 0.5 / Math.pow(2, nl - 1) : fl ? FLAG[fl.c] : (s.y1 - s.y0 < sp * 1.41 ? 2 : 1);
@@ -3245,6 +3308,12 @@ var PdfTab = (function () {
       if (tm && tm.num > 0 && tm.den > 0) ts = [tm.num, tm.den];
       if (!bb.length && edges[bi + 1] - edges[bi] < sp * 4) continue;
       var len = ts[0] * 4 / ts[1];
+      // rhythm read from the notation staff only counts when the bar adds up; otherwise space the beats as before
+      if (bb.some(function (b) { return b.fromNotn; })) {
+        var sumN2 = 0, unkN = false; bb.forEach(function (b) { if (b.dur == null) unkN = true; else sumN2 += b.dur; });
+        if (!unkN && sumN2 < len - 0.01 && bb.some(function (b) { return b.ambig; }) && !OFF.pdfambig) { if (halfFill(bb, len - sumN2, edges[bi + 1], sp, true)) sumN2 = len; }
+        if (unkN || Math.abs(sumN2 - len) > 0.01) bb.forEach(function (b) { b.dur = null; b.fromNotn = false; });
+      }
       if (!anyRhythm || bb.every(function (b) { return b.dur == null; })) {
         // no rhythm marks: spacing-based durations, quantised to 16ths
         var xs = bb.map(function (b) { return b.x; }).concat([edges[bi + 1]]), span = Math.max(1, xs[xs.length - 1] - (bb[0] ? bb[0].x : edges[bi]));
@@ -3264,7 +3333,7 @@ var PdfTab = (function () {
       }
       out.push({ labels: labels.filter(function (w) { return w.x0 > edges[bi] - sp * 2 && w.x0 <= edges[bi + 1] - sp; }).map(function (w) { return w.s; }), beats: bb, ts: ts.slice(), tempo: tempo && tempo.x > edges[bi] - sp * 6 && tempo.x <= edges[bi + 1] ? tempo.bpm : null, xs: [edges[bi], edges[bi + 1]] });
       if (tempo && out[out.length - 1].tempo) tempo = null;
-      if (window.__pdfDbg) window.__pdfDbg.push({ sp: sp, top: top, bot: bot, xs: [edges[bi], edges[bi + 1]], b: bb.map(function (b) { return [Math.round(b.x * 10) / 10, b.dur, b.rest ? 'r' : b.notes.length ? 'n' : 't', b.sl && Math.round(b.sl * 100) / 100, b.nl, b.fl, b.dot]; }) });
+      if (window.__pdfDbg) window.__pdfDbg.push({ notn: D.notn ? [D.notn.nsp, D.notn.heads.length, D.notn.stems.length, D.notn.beams.length, D.stems.length] : null, sp: sp, top: top, bot: bot, xs: [edges[bi], edges[bi + 1]], b: bb.map(function (b) { return [Math.round(b.x * 10) / 10, b.dur, b.rest ? 'r' : b.notes.length ? 'n' : 't', b.sl && Math.round(b.sl * 100) / 100, b.nl, b.fl, b.dot]; }) });
     }
     if (tempo && out.length) out[0].tempo = tempo.bpm;
     return { bars: out, ts: ts };
