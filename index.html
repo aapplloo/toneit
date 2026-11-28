@@ -4536,6 +4536,14 @@ var LocalTab = (function () {
             else if (OFF.r08on && cl.score < 0.86 && cl.s === '0' && mid >= 0.3 && rUp >= 0.3 && lLow >= 0.4) nw = '8';
             // a 5's lower bowl opens to the left
             else if (!OFF.r65 && cl.score < 0.86 && cl.s === '6' && lLow <= 0.4 && rLow >= 0.4) nw = '5';
+            // a 6 blurred toward an 8: an 8's upper loop is closed on the right all the way down to its waist,
+            // a 6 has a row there with nothing on its right side (and a solid left side)
+            else if (!OFF.r86 && cl.score < 0.86 && cl.score >= 0.62 && cl.s === '8' && h >= 10) {
+              var openR = 0, runR = 0, ry0 = Math.round(qa + h * 0.22), ry1 = Math.round(qa + h * 0.42), rx0 = Math.round(pa + w * 0.62);
+              for (var ry = ry0; ry <= ry1; ry++) { var rc = 0, lc2 = 0; for (var rx = rx0; rx <= pb; rx++) if (ink(rx, ry) > 0.5) rc++; for (rx = pa; rx < Math.round(pa + w * 0.4); rx++) if (ink(rx, ry) > 0.5) lc2++; runR = !rc && lc2 ? runR + 1 : 0; openR = Math.max(openR, runR); }
+              if (opt.dbgRound) opt.dbgRound.push([pa, 'r86', +cl.score.toFixed(2), openR, +lUp.toFixed(2), w, h]);
+              if (openR >= (OFF.r86n || 1) && lUp >= (OFF.r86l || 0.4)) nw = '6';
+            }
             if (opt.dbgRound) opt.dbgRound.push([pa, cl.s, +cl.score.toFixed(2), +rUp.toFixed(2), +lLow.toFixed(2), +mid.toFixed(2), +lUp.toFixed(2), +rLow.toFixed(2), nw]);
             if (nw) cl = { s: nw, score: Math.max(cl.score, 0.74), margin: 0.06, s2: cl.s };
           }
@@ -4623,7 +4631,7 @@ var LocalTab = (function () {
             var val = parseInt(pp.map(function (q) { return q.s; }).join(''), 10), sc = Math.min.apply(null, pp.map(function (q) { return q.score; })), mg = Math.min.apply(null, pp.map(function (q) { return q.margin; }));
             var unsure = sc < 0.72 || mg < 0.05; glyphs++; if (unsure) low++;
             var alt = pp.length === 1 && /\d/.test(pp[0].s2 || '') && mg < 0.08 ? +pp[0].s2 : null;
-            notes.push({ s: i + 1, x: (pp[0].a + pp[pp.length - 1].b) / 2, fret: val, alt: alt, ghost: cur.ghost, harm: cur.harm, unsure: unsure });
+            notes.push({ s: i + 1, x: (pp[0].a + pp[pp.length - 1].b) / 2, fret: val, alt: alt, ghost: cur.ghost, harm: cur.harm, unsure: unsure, maybe1: pp.length === 1 && !!pp[0].maybe1 });
           });
         } else if (cur.dead) { glyphs++; if (cur.unsure) low++; notes.push({ s: i + 1, x: (cur.a + cur.b) / 2, dead: true, fret: 0, unsure: cur.unsure }); }
         cur = null;
@@ -4644,11 +4652,25 @@ var LocalTab = (function () {
         for (var dx = -2; dx <= 2 && !hit; dx++) for (var dyc = -dyMax; dyc <= dyMax && !hit; dyc++) if (arms(Math.round(xc + dx), hw, dyc)) hit = true;
         return hit ? { x: xc, used: used, a: a, b: b } : null;
       };
+      // a blurred serif 1 reads as a bracket: a ')' right before a number with no number before it, or a '('
+      // right before a number that no ')' closes, is the 1 of 10–19
+      if (!OFF.br1) toks.forEach(function (tk, k) {
+        if (tk.s !== ')' && tk.s !== '(') return;
+        var nx = toks[k + 1], pv = toks[k - 1], gap = sp * 0.32;
+        if (!nx || !/\d/.test(nx.s) || nx.a - tk.b > gap || parseInt('1' + nx.s, 10) > 19) return;
+        if (tk.s === ')' && pv && /\d/.test(pv.s) && tk.a - pv.b <= gap) return;
+        if (tk.s === '(') { var j = k + 1; while (toks[j + 1] && /\d/.test(toks[j + 1].s) && toks[j + 1].a - toks[j].b <= gap) j++; var cl2 = toks[j + 1]; if (cl2 && cl2.s === ')' && cl2.a - toks[j].b <= gap) return; }
+        tk.s = '1'; tk.score = Math.min(tk.score, 0.7); tk.margin = 0.04; tk.s2 = null;
+      });
       toks.forEach(function (tk, k) {
         if (usedX[k]) return;
         if (!OFF.xbr && /[<>()]/.test(tk.s)) {
           var xr = xFromBracket(k);
           if (xr) { flush(); xr.used.forEach(function (u) { usedX[u] = 1; }); tallRuns = tallRuns.filter(function (r) { return r[1] < xr.a || r[0] > xr.b; }); glyphs++; notes.push({ s: i + 1, x: xr.x, dead: true, fret: 0, unsure: false }); return; }
+          // a bracket standing alone (nothing inside it, no partner) is a blurred 1
+          var pv2 = toks[k - 1], nx2 = toks[k + 1];
+          // (kept only if a number on another string stands in the same column: a piece of a bend arrow is alone)
+          if (!OFF.br1b && /[()]/.test(tk.s) && tk.score >= 0.68 && !(pv2 && tk.a - pv2.b <= sp * 0.45) && !(nx2 && nx2.a - tk.b <= sp * 0.45)) { tk.s = '1'; tk.score = Math.min(tk.score, 0.7); tk.margin = 0.04; tk.s2 = null; tk.maybe1 = true; }
         }
         if (opt.dbgTok) opt.dbgTok.push([i, tk.a, tk.b, tk.s, +tk.score.toFixed(2)]);
         if (!OFF.slash && /\d/.test(tk.s) && slashy(tk.a, tk.b, i)) { flush(); slashXs.push((tk.a + tk.b) / 2); return; } // a rhythm slash read as a digit
@@ -4685,6 +4707,8 @@ var LocalTab = (function () {
       }
     }
 
+    // a lone bracket read as a 1 must stand in a chord column
+    if (notes.some(function (n) { return n.maybe1; })) notes = notes.filter(function (n) { return !n.maybe1 || notes.some(function (m) { return m !== n && m.s !== n.s && !m.maybe1 && Math.abs(m.x - n.x) < sp * 0.4; }); });
     // (opt-in) an unsure digit takes its runner-up reading when nearby notes on the same string agree with that
     notes.forEach(function (n) {
       if (n.alt == null) return;
