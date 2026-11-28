@@ -4440,9 +4440,27 @@ var LocalTab = (function () {
         function lightest(y1, y2) { var br = y1, bc = 1e9; for (var yr = Math.round(y1); yr <= Math.round(y2); yr++) { var c = rowInk(yr); if (c < bc) { bc = c; br = yr; } } return [br, bc]; }
         // only where ink actually runs across the midline to the next line (otherwise the glyph is whole as it is)
         // ...and only against a digit-sized blob on that neighbouring line (not a bend arrow or slur passing by)
-        function digitNear(yc) { var cols = 0; for (var xr = a0; xr <= b0; xr++) { for (var yr = Math.round(yc - sp * 0.3); yr <= Math.round(yc + sp * 0.3); yr++) if (Math.abs(yr - yc) > tt && dark(xr, yr)) { cols++; break; } } return cols >= Math.max(3, sp * 0.3); }
-        var cutA = i > 0 && rowInk(Math.round(lyc - hb)) && b0 - a0 + 1 >= sp * 0.3 && digitNear(lyc - sp) ? lightest(lyc - sp * 0.72, lyc - sp * 0.3) : [lyc - hb - 1, 0],
-          cutB = i < 5 && rowInk(Math.round(lyc + hb)) && b0 - a0 + 1 >= sp * 0.3 && digitNear(lyc + sp) ? lightest(lyc + sp * 0.3, lyc + sp * 0.72) : [lyc + hb + 1, 0];
+        // (a 1 is only a stroke wide: a narrow blob counts when it stands above and below that line)
+        function digitNear(yc) {
+          var cols = 0, upC = 0, dnC = 0; for (var xr = a0; xr <= b0; xr++) { var hit = false; for (var yr = Math.round(yc - sp * 0.3); yr <= Math.round(yc + sp * 0.3); yr++) if (Math.abs(yr - yc) > tt && dark(xr, yr)) { hit = true; if (yr < yc) upC = 1; else dnC = 1; } if (hit) cols++; }
+          if (cols >= Math.max(3, sp * 0.3)) return true;
+          // this glyph is a narrow 1: look at the neighbour's own width around it
+          if (!OFF.nearW && b0 - a0 + 1 < sp * 0.3) {
+            var colsW = 0, pad = Math.round(sp * 0.25);
+            for (xr = a0 - pad; xr <= b0 + pad; xr++) { for (yr = Math.round(yc - sp * 0.3); yr <= Math.round(yc + sp * 0.3); yr++) if (Math.abs(yr - yc) > tt && dark(xr, yr)) { colsW++; break; } }
+            if (colsW >= Math.max(3, sp * 0.35)) return true;
+          }
+          if (OFF.near1 || !(cols >= Math.max(2, sp * 0.1) && upC && dnC)) return false;
+          // a narrow 1 there: digit-tall and ending beyond the line on its far side (a bend arrow runs on)
+          // (below, a stroke carrying on down is the beat's stem — normal; above, it is a bend arrow)
+          var far = yc < lyc ? -1 : 1; if (far > 0) return true;
+          var yEnd = Math.round(yc + far * sp * 0.62), endInk = 0; for (xr = a0; xr <= b0; xr++) if (dark(xr, yEnd) || dark(xr, yEnd + far)) endInk++;
+          return endInk === 0;
+        }
+        // (a narrow 1 touching a number on the next line is cut there too)
+        var wideOk = b0 - a0 + 1 >= sp * 0.3 || (!OFF.cut1 && b0 - a0 + 1 >= Math.max(2, sp * 0.12));
+        var cutA = i > 0 && rowInk(Math.round(lyc - hb)) && wideOk && digitNear(lyc - sp) ? lightest(lyc - sp * 0.72, lyc - sp * 0.3) : [lyc - hb - 1, 0],
+          cutB = i < 5 && rowInk(Math.round(lyc + hb)) && wideOk && digitNear(lyc + sp) ? lightest(lyc + sp * 0.3, lyc + sp * 0.72) : [lyc + hb + 1, 0];
         if (i > 0) {
           var thick = 0, bestThick = 0, edge = Math.round(lyc - sp * 0.5);
           for (xx = a0 - 1; xx <= b0 + 1; xx++) { if (cont(xx, lyc - sp * 0.78, lyc - sp * 0.3) && dark(xx, edge)) { thick++; if (thick > bestThick) bestThick = thick; } else thick = 0; }
@@ -4551,6 +4569,16 @@ var LocalTab = (function () {
             if (!OFF.r06 && cl.score < 0.86 && cl.s === '0' && mid >= 0.15 && rUp <= 0.25 && lLow >= 0.5) nw = '6';
             else if (!OFF.r09 && cl.score < 0.86 && cl.s === '0' && mid >= 0.15 && lLow <= 0.25 && rUp >= 0.4) nw = '9';
             else if (OFF.r08on && cl.score < 0.86 && cl.s === '0' && mid >= 0.3 && rUp >= 0.3 && lLow >= 0.4) nw = '8';
+            // an 8 is pinched at its waist (both outer edges come in), a 0 is widest there
+            else if (!OFF.r08b && cl.score < 0.86 && cl.s === '0' && h >= 12 && w >= 7 && mid >= 0.3) {
+              var edge = function (yy3) { var l3 = -1, r3 = -1; for (var xx3 = pa; xx3 <= pb; xx3++) if (ink(xx3, yy3) > 0.5) { if (l3 < 0) l3 = xx3; r3 = xx3; } return [l3, r3]; };
+              var band = function (f0, f1) { var L = 1e9, R = -1e9, Lmin = 1e9, Rmax = -1e9; for (var yy4 = Math.round(qa + h * f0); yy4 <= Math.round(qa + h * f1); yy4++) { var e4 = edge(yy4); if (e4[0] < 0) continue; L = Math.min(L, e4[0]); R = Math.max(R, e4[1]); } return [L, R]; };
+              var waistL = 1e9, waistR = -1e9;
+              for (var yy5 = Math.round(qa + h * 0.4); yy5 <= Math.round(qa + h * 0.52); yy5++) { var e5 = edge(yy5); if (e5[0] < 0) continue; waistL = Math.min(waistL, e5[0]); waistR = Math.max(waistR, e5[1]); }
+              var up4 = band(0.18, 0.32), lo4 = band(0.62, 0.8), pL = waistL - Math.min(up4[0], lo4[0]), pR = Math.max(up4[1], lo4[1]) - waistR;
+              if (opt.dbgRound) opt.dbgRound.push([pa, 'r08b', +cl.score.toFixed(2), pL, pR, +mid.toFixed(2), w, h]);
+              if (pL >= 1 && pR >= 1) nw = '8';
+            }
             // a 5's lower bowl opens to the left
             else if (!OFF.r65 && cl.score < 0.86 && cl.s === '6' && lLow <= 0.4 && rLow >= 0.4) nw = '5';
             // a 6 blurred toward an 8: an 8's upper loop is closed on the right all the way down to its waist,
@@ -4680,6 +4708,8 @@ var LocalTab = (function () {
         }
         if (spans.length) toks = toks.filter(function (t) { return !(t.h <= sp * 0.58 && spans.some(function (sp2) { return t.a >= sp2[0] - 1 && t.b <= sp2[1] + 1; })); });
       }
+      // a hair-thin stroke is part of an arrow or slur, not a printed 1 (a 1 has some width)
+      if (!OFF.thin1) toks = toks.filter(function (t) { return !(t.s === '1' && t.b - t.a + 1 < Math.max(3, sp * 0.16) && t.score < 0.8); });
       // a low hump that only just reads as a digit is a piece of a line or squiggle, not a number
       if (!OFF.lowtok) toks = toks.filter(function (t) { return !(t.h != null && t.h <= sp * 0.5 && t.score < 0.62 && /\d/.test(t.s)); });
       // a blurred serif 1 reads as a bracket: a ')' right before a number with no number before it, or a '('
