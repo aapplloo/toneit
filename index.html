@@ -5524,9 +5524,108 @@ var LocalTab = (function () {
       return best;
     }
     var staffStems = -1;
+    // score + tab with the rhythm only in the notation staff above: a beat's length from its stem, beams/flags,
+    // head (filled / hollow) and dot there
+    // (barOut runs before these lines are reached: read the staff fields where they are used)
+    function vruns(cx, y0, y1) { var out = [], a = -1; for (var yy = Math.round(y0); yy <= Math.round(y1) + 1; yy++) { var on = yy <= y1 && offHLine(cx, yy); if (on && a < 0) a = yy; else if (!on && a >= 0) { out.push([a, yy - 1]); a = -1; } } return out; }
+    function notnImg(bx) {
+      var NT = st.notTop, NS = st.notSp;
+      if (NT == null || !(NS > 0)) return null;
+      var yA = NT - NS * 4.5, yB = Math.min(NT + NS * 8.5, st.top - sp * 0.7), best = null;
+      // the stem: the longest thin vertical stroke next to the beat
+      for (var cx = Math.round(bx - NS * 1.15); cx <= Math.round(bx + NS * 1.15); cx++) {
+        var run = 0, a = -1, bestR = null;
+        for (var yy = Math.round(yA); yy <= Math.round(yB); yy++) { if (dark(cx, yy)) { if (a < 0) a = yy; run = yy - a + 1; if (!bestR || run > bestR[1] - bestR[0] + 1) bestR = [a, yy]; } else a = -1; }
+        if (!bestR || bestR[1] - bestR[0] < NS * 2.4) continue;
+        // thin: not dark a little to both sides along most of it
+        var thin = 0, tot = 0; for (yy = bestR[0]; yy <= bestR[1]; yy += 2) { tot++; if (!dark(cx - Math.max(2, Math.round(NS * 0.2)), yy) || !dark(cx + Math.max(2, Math.round(NS * 0.2)), yy)) thin++; }
+        if (thin < tot * 0.6) continue;
+        var dd = Math.abs(cx - bx); if (!best || dd < best.d - 1 || (Math.abs(dd - best.d) <= 1 && bestR[1] - bestR[0] > best.y1 - best.y0)) best = { x: cx, y0: bestR[0], y1: bestR[1], d: dd };
+      }
+      // the head(s) at the beat's own column: filled = thick runs, hollow = thin ring parts with a hole between
+      var hollow = false, filled = false, hy0 = 1e9, hy1 = -1, bxr;
+      // (the head's centre can sit a little off the tab number's centre: look across a few columns)
+      for (var ox = 0; ox <= Math.round(NS * 0.3); ox = ox > 0 ? -ox : -ox + Math.max(1, Math.round(NS * 0.1))) {
+      bxr = Math.round(bx + ox);
+      var rs = vruns(bxr, yA, yB);
+      rs.forEach(function (r, k) {
+        var h = r[1] - r[0] + 1; if (ox === 0 && h >= NS * 0.65 && h <= NS * 4.5) { filled = true; hy0 = Math.min(hy0, r[0]); hy1 = Math.max(hy1, r[1]); }
+        var n2 = rs[k + 1]; if (!(n2 && h <= NS * 0.4 && n2[1] - n2[0] + 1 <= NS * 0.4 && n2[0] - r[1] - 1 >= NS * 0.3 && n2[0] - r[1] - 1 <= NS * 0.85)) return;
+        // a real hole: clear a little to both sides, ring walls further out
+        var ym = Math.round((r[1] + n2[0]) / 2), q1 = Math.round(NS * 0.2), q2 = Math.round(NS * 0.6), q3 = Math.round(NS * 0.85), wl = false, wr = false;
+        if (offHLine(bxr, ym) || offHLine(bxr - q1, ym) || offHLine(bxr + q1, ym)) return;
+        for (var xw = bxr - q3; xw <= bxr - q2; xw++) if (offHLine(xw, ym)) wl = true;
+        for (xw = bxr + q2; xw <= bxr + q3; xw++) if (offHLine(xw, ym)) wr = true;
+        if (wl && wr) { hollow = true; hy0 = Math.min(hy0, r[0]); hy1 = Math.max(hy1, n2[1]); }
+      });
+      if (OFF.notnox || hollow) break;
+      }
+      // a hollow head: a small white hole fully closed in by ink, next to the stem (or at the beat when stemless)
+      if (!hollow && !OFF.notnhole) {
+        var seenH = {}, capX = NS * 0.8, capY = NS * 0.75;
+        var holeAt = function (sx, sy) {
+          if (dark(sx, sy) || seenH[sx + ',' + sy]) return false;
+          var stk2 = [[sx, sy]], a0 = sx, a1 = sx, b0 = sy, b1 = sy, n = 0, open = false; seenH[sx + ',' + sy] = 1;
+          while (stk2.length && !open) { var p2 = stk2.pop(); n++; a0 = Math.min(a0, p2[0]); a1 = Math.max(a1, p2[0]); b0 = Math.min(b0, p2[1]); b1 = Math.max(b1, p2[1]); if (a1 - a0 > capX || b1 - b0 > capY) open = true;
+            [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (d9) { var qx = p2[0] + d9[0], qy = p2[1] + d9[1], k9 = qx + ',' + qy; if (!seenH[k9] && !dark(qx, qy)) { seenH[k9] = 1; stk2.push([qx, qy]); } }); }
+          // (a head's hole is a fair size; the slivers between a head, the stem and a line are tiny)
+          var nearStem = best && a0 <= best.x + 2 && a1 >= best.x - 2, hc2 = (a0 + a1) / 2;
+          return !open && !nearStem && n >= Math.max(6, NS * NS * 0.06) && a1 - a0 + 1 >= NS * 0.3 && b1 - b0 + 1 >= Math.max(2, NS * 0.12) && b1 - b0 + 1 <= NS * 0.55 && (OFF.notnhc || Math.abs(hc2 - bx) <= NS * 0.45 || (best && Math.abs(hc2 - bx) <= NS * 1.6 && Math.abs(Math.abs(hc2 - best.x) - NS * 0.6) <= NS * 0.3));
+        };
+        var cols = best ? [Math.round(best.x - NS * 0.6), Math.round(best.x + NS * 0.6)] : [Math.round(bx)], ys0 = best ? best.y0 - NS * 0.6 : yA, ys1 = best ? best.y1 + NS * 0.6 : yB;
+        cols.forEach(function (hc) { for (var cx3 = hc - 1; cx3 <= hc + 1 && !hollow; cx3++) for (var yy3 = Math.round(ys0); yy3 <= Math.round(ys1) && !hollow; yy3++) if (holeAt(cx3, yy3)) hollow = true; });
+      }
+      if (!best) return hollow ? { d: 4, why: 'whole' } : null;
+      // beams / flags: bands 0.3–0.8 line-space thick beside the stem, near one of its ends
+      var bands = function (end, dir) {
+        var bestN = 0;
+        [-1, 1].forEach(function (side) {
+          var reach = OFF.notnreach19 ? 1.9 : 2.6, cx2 = Math.round(best.x + side * Math.max(2, NS * 0.35)), ya = dir > 0 ? end - NS * 0.3 : end - NS * reach, yb = dir > 0 ? end + NS * reach : end + NS * 0.3;
+          var n = 0; vruns(cx2, ya, yb).forEach(function (r) {
+            var h = r[1] - r[0] + 1; if (h < NS * 0.28 || h > NS * 0.8) return;
+            // a beam or flag runs on sideways from the stem (not a dot, a ledger line's end or a sharp's stroke)
+            var yc = Math.round((r[0] + r[1]) / 2), ext = 0; for (var xe = cx2; Math.abs(xe - best.x) <= NS * 1.5 && dark(xe, yc); xe += side) ext++;
+            if (!OFF.notnwideon || ext >= NS * 0.45) n++;
+          });
+          bestN = Math.max(bestN, n);
+        });
+        return bestN;
+      };
+      // (only at the stem's far end: next to the heads, a hollow head's ring reads as bands)
+      var nTop = bands(best.y0, 1), nBot = bands(best.y1, -1), nb = Math.max(nTop, nBot);
+      var hyc = hy1 >= 0 ? (hy0 + hy1) / 2 : NT + NS * 2;
+      if (!OFF.notnfar) nb = Math.abs(best.y0 - hyc) > Math.abs(best.y1 - hyc) ? nTop : nBot;
+      var d = nb ? 0.5 / Math.pow(2, nb - 1) : hollow ? 2 : 1;
+      // a dot right of the head, between the lines (or on one)
+      // a dot: a small round blob right of the heads, at their height
+      var dot = false, hx = Math.round(bx + NS * 0.8);
+      if (hy1 >= 0) for (var dx = hx; dx <= hx + Math.round(NS * 1.1) && !dot; dx++) {
+        if (Math.abs(dx - best.x) <= NS * 0.3) continue;
+        vruns(dx, hy0 - NS * 0.6, hy1 + NS * 0.6).forEach(function (r) {
+          var h = r[1] - r[0] + 1, yc = Math.round((r[0] + r[1]) / 2); if (h < Math.max(2, NS * 0.22) || h > NS * 0.6) return;
+          // the whole blob must stay dot-sized (a sharp's or a head's pieces join into something bigger)
+          var stk = [[dx, yc]], seen = {}, x0b = dx, x1b = dx, y0b = yc, y1b = yc, big = false; seen[dx + ',' + yc] = 1;
+          while (stk.length && !big) { var pp = stk.pop(); x0b = Math.min(x0b, pp[0]); x1b = Math.max(x1b, pp[0]); y0b = Math.min(y0b, pp[1]); y1b = Math.max(y1b, pp[1]); if (x1b - x0b > NS * 0.65 || y1b - y0b > NS * 0.65) big = true;
+            [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (d9) { var qx = pp[0] + d9[0], qy = pp[1] + d9[1], k9 = qx + ',' + qy; if (!seen[k9] && offHLine(qx, qy)) { seen[k9] = 1; stk.push([qx, qy]); } }); }
+          if (!big && x1b - x0b + 1 >= Math.max(2, NS * 0.22) && y1b - y0b + 1 >= Math.max(2, NS * 0.22) && x0b > bx + NS * 0.55) dot = true;
+        });
+      }
+      if (opt.dbgNotn) opt.dbgNotn.push({ bx: Math.round(bx), stem: [best.x, best.y0, best.y1], nTop: nTop, nBot: nBot, hollow: hollow, filled: filled, dot: dot, d: d });
+      return { d: d * (dot ? 1.5 : 1) };
+    }
     function barOut(bar, len) {
-      if (!bar.beats.length) return { ts: bar.ts, beats: [{ q: len, r: 1 }], empty: true };
+      if (!bar.beats.length) { if (opt.dbgNotn) opt.dbgNotn.push({ bar: Math.round(bar.L), qn: [len], empty: true }); return { ts: bar.ts, beats: [{ q: len, r: 1 }], empty: true }; }
       if (!(staffStems >= 0)) staffStems = stemLens.length + stemLensUp.length >= 3 ? 1 : 0; // (barOut runs before this declaration line is reached)
+      // no rhythm in the tab but a notation staff above: read the lengths there; use them only if the bar adds up
+      if (!staffStems && st.notTop != null && !OFF.notnimg) {
+        var qn = bar.beats.map(function (b) { if (b.rest) return b.ru ? b.ru / 4 : null; var r = notnImg(b.x); return r ? r.d : null; });
+        var sn = qn.reduce(function (a2, v) { return a2 + (v || 0); }, 0);
+        if (opt.dbgNotn) opt.dbgNotn.push({ bar: Math.round(bar.L), qn: qn, len: len });
+        if (qn.every(function (v) { return v; }) && Math.abs(sn - len) < 0.01) {
+          if (opt.dbgBeats) opt.dbgBeats.push(bar.beats.map(function (b, j) { return [Math.round(b.x), b.rest ? 'r' : b.n.map(function (n) { return n.s + ':' + n.fret; }).join(','), 'N', qn[j], null]; }));
+          return { ts: bar.ts, beats: beatsOut(bar.beats, qn), notn: true };
+        }
+      }
       // in a staff that writes its rhythm, a lone "number" with no stem that stands much taller than a digit is a
       // rest sign (a quarter-rest zigzag reads as a 1)
       // (a rest's slanted stroke can pass for a stem drawn up from it, in a staff whose stems all go down)
