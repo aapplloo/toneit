@@ -4177,7 +4177,7 @@ var OMR_TPL = "0:AAAHr/yAAAAAAK/6r/oAAAAF/SAAz3AAAAr1AAA/wAAADdAAAAzwAAA/oAAACvU
    Each system also gets a confidence so the app can ask Claude about only the unsure ones. */
 var LocalTab = (function () {
   'use strict';
-  var N = 16, TPL = null, TPL_L = null, TPL_N = null;
+  var N = 16, TPL = null, TPL_L = null, TPL_N = null, TPL_R = null;
 
   /* ---------- character matching ---------- */
   // fit a glyph into an NxN box keeping its aspect ratio, then mean-centre and normalise (cosine match)
@@ -4207,7 +4207,13 @@ var LocalTab = (function () {
   // templates come pre-rendered from real font files (Arial/Helvetica/Times/Roboto/… shapes), see tools/gen_tpl.py
   function templates() {
     if (TPL) return;
-    TPL = []; TPL_L = []; TPL_N = [];
+    TPL = []; TPL_L = []; TPL_N = []; TPL_R = [];
+    String(typeof OMR_RST === 'string' ? OMR_RST : '').split(';').forEach(function (rec) {
+      var k = rec.indexOf(':'); if (k < 1) return;
+      var bin = atob(rec.slice(k + 1)), cov = new Float32Array(N * N);
+      for (var i = 0; i < bin.length; i++) { var b = bin.charCodeAt(i); cov[i * 2] = (b >> 4) / 15; cov[i * 2 + 1] = (b & 15) / 15; }
+      TPL_R.push({ s: rec.slice(0, k), v: finish(cov) });
+    });
     String(typeof OMR_TPL === 'string' ? OMR_TPL : '').split(';').forEach(function (rec) {
       var k = rec.indexOf(':'); if (k < 1) return;
       var sym = rec.slice(0, k), bin = atob(rec.slice(k + 1)), cov = new Float32Array(N * N), i, narrow = sym[0] === '~';
@@ -4925,6 +4931,28 @@ var LocalTab = (function () {
       var mg = [];
       out.forEach(function (r) { var l = mg[mg.length - 1]; if (l && r.x - l.x < sp * 0.9) { l.x = (l.x + r.x) / 2; l.h = Math.max(l.h, r.h); l.b = r.b; } else mg.push({ x: r.x, h: r.h, a: r.a, b: r.b }); });
       if (opt.dbgRests) opt.dbgRests.push(mg.map(function (r) { return [Math.round(r.x), +r.h.toFixed(2)]; }), out.map(function (r) { return [Math.round(r.x), +r.h.toFixed(2)]; }));
+      // which rest it is, from its shape (quarter zigzag, 8th/16th hooks), and a dot after it
+      if (!OFF.restshape && TPL_R && TPL_R.length) mg.forEach(function (r) {
+        var xa = Math.round(r.a - 2), xb = Math.round(r.b + 2), ya = Math.round(lineY(0, r.a) - sp * 0.4), yb = Math.round(lineY(5, r.a) + sp * 0.4);
+        var clean = function (cx, cy) { if (!dark(cx, cy)) return 0; for (var li = 0; li < 6; li++) { var ly = lineY(li, cx); if (Math.abs(cy - ly) <= tt && !dark(cx, ly - tt - 1) && !dark(cx, ly + tt + 1)) return 0; } return 1; };
+        var qa = 1e9, qb = -1, pa = 1e9, pb = -1, cx, cy;
+        for (cx = xa; cx <= xb; cx++) for (cy = ya; cy <= yb; cy++) if (clean(cx, cy)) { if (cy < qa) qa = cy; if (cy > qb) qb = cy; if (cx < pa) pa = cx; if (cx > pb) pb = cx; }
+        if (qb < 0 || qb - qa < sp * 0.6) return;
+        var c = classify(vec(function (gx, gy) { return clean(pa + gx, qa + gy); }, pb - pa + 1, qb - qa + 1), TPL_R);
+        r.shape = c; if (c.score >= 0.62) r.units = +c.s;
+        // a dot: a small blob just right of the rest, inside the staff
+        var dotFound = false;
+        for (cx = pb + 2; cx <= pb + Math.round(sp * 0.8) && !dotFound; cx++) for (cy = Math.round(lineY(1, cx)); cy <= Math.round(lineY(4, cx)) && !dotFound; cy++) {
+          if (!clean(cx, cy)) continue;
+          // the whole blob (stop once it grows past a dot's size: a number or a stem)
+          var st9 = [[cx, cy]], seen9 = {}, bx0 = cx, bx1 = cx, by0 = cy, by1 = cy, big9 = false; seen9[cx + ',' + cy] = 1;
+          while (st9.length && !big9) { var p9 = st9.pop(); bx0 = Math.min(bx0, p9[0]); bx1 = Math.max(bx1, p9[0]); by0 = Math.min(by0, p9[1]); by1 = Math.max(by1, p9[1]); if (bx1 - bx0 > sp * 0.4 || by1 - by0 > sp * 0.4) big9 = true;
+            [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (d9) { var qx = p9[0] + d9[0], qy = p9[1] + d9[1], k9 = qx + ',' + qy; if (!seen9[k9] && clean(qx, qy)) { seen9[k9] = 1; st9.push([qx, qy]); } }); }
+          if (!big9 && bx1 - bx0 + 1 >= 2 && by1 - by0 + 1 >= 2) dotFound = true;
+          else { cx = bx1 + 1; break; } // a bigger thing in the way: no dot here
+        }
+        if (dotFound && r.units) r.units *= 1.5;
+      });
       // the two sides of a circle drawn round a number (a whole note) are not two rests
       if (!OFF.circ) mg = mg.filter(function (r) {
         return !notes.some(function (n) {
@@ -5116,7 +5144,7 @@ var LocalTab = (function () {
         var sx = OFF.slash ? -1 : slashStem(r);
         if (opt.dbgSlash) { var tops = []; for (var q2 = Math.round(r.a - sp * 0.4); q2 <= Math.round(r.b + sp * 0.4); q2++) if (stemTop[q2] < 1e8) tops.push([q2, Math.round(stemTop[q2]), Math.round(lineY(5, q2) - sp * 0.6)]); opt.dbgSlash.push({ x: Math.round(r.x), a: r.a, b: r.b, h: +r.h.toFixed(2), sx: sx, tops: tops.slice(0, 6) }); }
         if (sx >= 0) beats.push({ x: r.x, n: [], slash: true, stem: stemAt(sx) });
-        else beats.push({ x: r.x, n: [], rest: true, rh: r.h });
+        else beats.push({ x: r.x, n: [], rest: true, rh: r.h, ru: r.units });
       });
       if (!OFF.slash) slashXs.forEach(function (x5) { if (x5 > L0 && x5 < R0 && !beats.some(function (b) { return Math.abs(b.x - x5) < sp * 0.75; })) { var st5 = null; for (var d5 = -Math.round(sp * 0.5); d5 <= Math.round(sp * 0.2) && !st5; d5++) if (stemTop[Math.round(x5 + d5)] < lineY(5, Math.round(x5 + d5)) - sp * 0.6) st5 = stemAt(x5 + d5); beats.push({ x: x5, n: [], slash: true, stem: st5 }); } });
       beats.sort(function (p, q) { return p.x - q.x; });
@@ -5189,28 +5217,43 @@ var LocalTab = (function () {
         var ext = inkExtent(b.x); b.ext = +(ext / sp).toFixed(2); if (ext >= sp * 1.15) { b.rest = true; b.rh = ext / sp; b.n = []; }
       });
       var q = bar.beats.map(function (b) {
-        if (b.rest || !b.stem) return null;
+        if (b.rest) return b.ru && OFF.restfixon ? b.ru / 4 : null; // a rest whose shape read clearly keeps its own length
+        if (!b.stem) return null;
         return durOf(b, medStem, medUp);
       });
+      var typedRest = function (b) { return b.rest && b.ru && OFF.restfixon; };
       var sum = q.reduce(function (a2, v) { return a2 + (v || 0); }, 0);
       // a note drawn with no stem where the others have one is a half or whole note: let it take what the bar lacks
       var freeN = staffStems && !OFF.freeN ? bar.beats.map(function (b, j) { return !b.rest && b.n.length && q[j] == null; }) : bar.beats.map(function () { return false; });
-      var noteQ = bar.beats.every(function (b, j) { return b.rest || q[j] || freeN[j]; }), rests = bar.beats.filter(function (b, j) { return b.rest || freeN[j]; });
+      var noteQ = bar.beats.every(function (b, j) { return b.rest || q[j] || freeN[j]; }), rests = bar.beats.filter(function (b, j) { return (b.rest && !typedRest(b)) || freeN[j]; });
+      // a half note drawn like a quarter in a bar that also has rests: when the rests' own shapes leave a whole
+      // quarter or more unfilled, the plain stems standing in clearly wider room are halves
+      if (!OFF.halfrest && qGap && noteQ && rests.length && rests.every(function (b) { return b.rest; })) {
+        var restLen = 0; rests.forEach(function (b) { restLen += b.ru ? b.ru / 4 : b.rh >= 1.45 ? 1 : b.rh >= 0.8 ? 0.5 : 0.25; });
+        var m2 = len - sum - restLen;
+        if (opt.dbgHalf) opt.dbgHalf.push({ hr: 1, L: Math.round(bar.L), m2: m2, restLen: restLen, qGap: Math.round(qGap), ru: rests.map(function (b) { return [b.ru, +(b.rh || 0).toFixed(2)]; }) });
+        if (m2 >= 0.99) {
+          var cands2 = [];
+          bar.beats.forEach(function (b, j) { if (b.rest || q[j] !== 1 || !b.stem || b.stem.up || beamsAt(b.stem).beams) return; var nx = j < bar.beats.length - 1 ? bar.beats[j + 1].x : bar.R - sp * 0.3; cands2.push([j, (nx - b.x) / qGap]); });
+          cands2.sort(function (p2, q2) { return q2[1] - p2[1]; });
+          cands2.forEach(function (c2) { if (m2 >= 0.99 && c2[1] >= 1.22) { q[c2[0]] = 2; sum += 1; m2 -= 1; } });
+        }
+      }
       if (noteQ && rests.length) {
         var miss = len - sum;
         if (miss < 0.2 && freeN.some(function (v) { return v; })) { /* no time left for a stemless note: leave it to the spacing fallback */ }
-        else if (miss < 0.2) { bar.beats = bar.beats.filter(function (b) { return !b.rest; }); q = q.filter(function (v) { return v; }); }
+        else if (miss < 0.2) { var keep = bar.beats.map(function (b) { return !b.rest || typedRest(b); }); bar.beats = bar.beats.filter(function (b, j) { return keep[j]; }); q = q.filter(function (v, j) { return keep[j]; }); }
         else { // share the missing time between the rests by their spacing, on a 16th grid
-          var isFree = function (b, j) { return b.rest || freeN[j]; };
+          var isFree = function (b, j) { return (b.rest && !typedRest(b)) || freeN[j]; };
           var wsum = 0, ws = bar.beats.map(function (b, j) { if (!isFree(b, j)) return 0; var nx = j < bar.beats.length - 1 ? bar.beats[j + 1].x : bar.R; var w = Math.max(sp, nx - b.x); wsum += w; return w; });
           var total = Math.round(miss * 4), idx = [], want = [];
           var typed = [], isNote = [];
-          bar.beats.forEach(function (b, j) { if (isFree(b, j)) { idx.push(j); want.push(ws[j] / wsum * total); isNote.push(!b.rest); typed.push(b.rest ? (b.rh >= 1.45 ? 4 : b.rh >= 0.8 ? 2 : 0) : 0); } }); // a tall zigzag (~1.7 lines) is a quarter rest, a short hook (~1 line) an eighth
+          bar.beats.forEach(function (b, j) { if (isFree(b, j)) { idx.push(j); want.push(ws[j] / wsum * total); isNote.push(!b.rest); typed.push(b.rest ? (b.ru ? b.ru : b.rh >= 1.45 ? 4 : b.rh >= 0.8 ? 2 : 0) : 0); } }); // the rest's shape when it reads clearly, else its height: a tall zigzag (~1.7 lines) is a quarter, a short hook (~1 line) an eighth
           // rests come in standard lengths: pick the combination closest to the spacing that fills the bar; a note
           // without a stem is a half or whole (or dotted half)
-          var STD = [1, 2, 3, 4, 6, 8, 12, 16], NSTD = [8, 16, 12], bestC = null, bestE = 1e9;
+          var STD = [1, 2, 3, 4, 6, 8, 12, 16], NSTD = [8, 16, 12], bestC = null, bestE = 1e9, typedW = bar.beats.map(function (b) { return b.ru ? 20 : 6; });
           (function pick(k, acc, rem) {
-            if (k === idx.length) { if (rem === 0) { var e = 0; acc.forEach(function (u, m) { e += Math.pow(u - want[m], 2) + (typed[m] && u !== typed[m] ? 6 : 0); }); if (e < bestE) { bestE = e; bestC = acc.slice(); } } return; }
+            if (k === idx.length) { if (rem === 0) { var e = 0; acc.forEach(function (u, m) { e += Math.pow(u - want[m], 2) + (typed[m] && u !== typed[m] ? typedW[idx[m]] : 0); }); if (e < bestE) { bestE = e; bestC = acc.slice(); } } return; }
             if (idx.length > 4) return;
             (isNote[k] ? NSTD : STD).forEach(function (u) { if (u <= rem) { acc.push(u); pick(k + 1, acc, rem - u); acc.pop(); } });
           })(0, [], total);
@@ -5246,9 +5289,10 @@ var LocalTab = (function () {
         var pxq2 = ratios.length ? ratios[ratios.length >> 1] : (bar.R - bar.L) / len;
         if (opt.dbgHalf) opt.dbgHalf.push({ bi: opt.dbgBeats ? opt.dbgBeats.length : -1, L: Math.round(bar.L), cand: cand.map(function (j) { return [Math.round(bar.beats[j].x), +(gaps[j] / pxq2).toFixed(2)]; }), pxq: +pxq2.toFixed(1), nr: ratios.length });
         if (cand.length && cand.length <= 6) {
-          var need = Math.round((len - sum) * 2), EXT = [0, 1, 2, 4], bestE2 = null, bestErr = 1e9; // in halves of a quarter
+          var need = Math.round((len - sum) * 2), EXT = OFF.extdot ? [0, 1, 2, 4] : [0, 1, 2], bestE2 = null, bestErr = 1e9; // a dotted note shows its dot: an undotted plain stem is rather a half (a dot can still be missed in a blurry picture) // in halves of a quarter
           (function pick2(k, acc, rem) {
             if (k === cand.length) { if (rem === 0) { var err = 0; acc.forEach(function (e, m) {
+              if (e === 1 && !OFF.extdot) err += OFF.dotPen != null ? OFF.dotPen : 0.6;
               if (qGap) { var lg = (gaps[cand[m]] / qGap - 1) / 0.37; err += Math.pow(Math.log(1 + e / 2) / Math.LN2 - lg, 2); } // room grows by about a third per doubling
               else { var sur = gaps[cand[m]] / pxq2 - 1; err += Math.pow(e / 2 - sur * 0.75, 2); }
             }); if (err < bestErr) { bestErr = err; bestE2 = acc.slice(); } } return; }
@@ -5772,6 +5816,9 @@ var LocalHead = (function () {
   }
   return { readHeader: readHeader, _phrases: phrases };
 })();
+
+/* generated by tools/gen_rest.py: rest symbols (quarter … 32nd) as 16x16 shapes; key = length in 16ths */
+var OMR_RST = "4:AAADgAAAAAAAAADIAAAAAAAAAC9QAAAAAAAAD/IAAAAAAAAP/QAAAAAAAH/6AAAAAAAD//IAAAAAAAX/oAAAAAAAAH+gAAAAAAAADKAAAAAAAABY8wAAAAAACP//IAAAAAAP/1VQAAAAAAj6AAAAAAAAAsoAAAAAAAAACjAAAAA=;4:AAADgAAAAAAAAALaAAAAAAAAAH9wAAAAAAAAD/UAAAAAAAAv/wAAAAAAAI/9AAAAAAAD//MAAAAAAAf/0AAAAAAAAK+gAAAAAAAADdAAAAAAAAKs+AAAAAAADf//MAAAAAAP/3igAAAAAAr6AAAAAAAAAN0AAAAAAAAAKnAAAAA=;4:AAADgAAAAAAAAAX6AAAAAAAAAM+AAAAAAAAAX/UAAAAAAABf/zAAAAAAAM//IAAAAAAH//cAAAAAAAj/8AAAAAAAAN/wAAAAAAAAL/IAAAAAAAXf+gAAAAAADf//gAAAAAAP/3igAAAAAAr/AAAAAAAAAt9QAAAAAAAAKoAAAAA=;2:AACP0wAHUAAAB///IF9QAAAK//+H/yAAAAP////8AAAAAF39dfcAAAAAAAAI8wAAAAAAAA3QAAAAAAAAP6AAAAAAAADPgAAAAAAAAv9QAAAAAAAH/wAAAAAAAAz6AAAAAAAAL/cAAAAAAACP8gAAAAAAAN/AAAAAAAAA3VAAAAA=;2:AACP1QAIcAAACP//Uq+gAAAK///M/3AAAAr/////MAAABc//3f0AAAAAA1MP+AAAAAAAAF/zAAAAAAAAr/AAAAAAAAL/gAAAAAAAB/9QAAAAAAAM/wAAAAAAAD/6AAAAAAAAj/oAAAAAAACv9QAAAAAAAN/yAAAAAAAA3XAAAAA=;2:AAB/9wAIUAAACP//g9/AAAAP/////4AAAA3/////MAAABf////0AAAAAWqrP+AAAAAAAAK/1AAAAAAAA//UAAAAAAAf/8AAAAAAADP+gAAAAAAAP/1AAAAAAAD//AAAAAAAAj/oAAAAAAAD/9QAAAAAABf/wAAAAAAACzYAAAAA=;1:AAAAenAnAAAAAAD/89cAAAAAAN/88wAAAAAABSPAAAAAAAAACoAAAAAAAAANUAAAAABd0l8AAAAAAK/42gAAAAAAX/z1AAAAAAADM/IAAAAAAAAI0AAAAAAAAA9QAAAAAAAAXyAAAAAAAACNAAAAAAAAAPoAAAAAAAAD8wAAAAA=;1:AAAAinAnAAAAAAX/99oAAAAAAv//9QAAAAAAOnzwAAAAAAAADMAAAAAAAAAPcAAAAAB/848wAAAAAP/93AAAAAAAj//4AAAAAAADN/MAAAAAAAAN8AAAAAAAAD+AAAAAAAAAj1AAAAAAAADPAAAAAAAABfoAAAAAAAAD9QAAAAA=;1:AAAAioBXAAAAAAP/+voAAAAAA///9wAAAAAAf83zAAAAAAAAD/AAAAAABTBfoAAAAACP9a8wAAAAAP/9/wAAAAAAr//6AAAAAAAFX/UAAAAAAAAv8gAAAAAAAH/QAAAAAAAAr3AAAAAAAAD/IAAAAAAAB/0AAAAAAAAH9wAAAAA=;0.5:AAAADdCgAAAAAAAP/cAAAAAAAAJVgAAAAAAAAAhQAAAAAACIDAAAAAAAAP9/AAAAAAAAeooAAAAAAAAAhQAAAAAAAzDCAAAAAAA/8/AAAAAAAAzcwAAAAAAAAAeAAAAAAAAADFAAAAAAAAAPAAAAAAAAAD8AAAAAAAAAWgAAAAA=;0.5:AAAADdCgAAAAAAA//9AAAAAAAAeqoAAAAAAAAApwAAAAAACIDzAAAAAAAv/PAAAAAAAAqs0AAAAAAAAAqAAAAAAAB4D1AAAAAAA/+PAAAAAAAA398AAAAAAAAAqgAAAAAAAAD3AAAAAAAAAvIAAAAAAAAF8AAAAAAAAArAAAAAA=;0.5:AAAALdKjAAAAAABf//AAAAAAAAqtwAAAAAAAAA2gAAAAAACKL1AAAAAABf/fIAAAAAACz90AAAAAAAAAygAAAAAACKD3AAAAAABf/PMAAAAAAC3/8AAAAAAAAA3QAAAAAAAAD4AAAAAAAABfUAAAAAAAAI8AAAAAAAAArQAAAAA=";
 
 /* ===== Sequencer: song → voices, rendering (Web Worker), scheduling, sync ===== */
 var Seq = (function () {
