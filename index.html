@@ -4811,9 +4811,13 @@ var LocalTab = (function () {
       if (opt.dbgTs && bi === 0) opt.dbgTs.push({ over: overG.slice(0, 6), bx: bx, clefX: clefX });
       if (!gs.length) return;
       var gI = 0;
-      if (bi === 0) { var t0 = readTall(gs[0].a, gs[0].b, top0 - sp * 0.3, top0 + sp * 1.7, TPL_L); if (!t0 || /[TAB]/.test(t0.s) || gs.length > 1) gI = 1; }
+      // the first group of a system is the TAB clef when it stands right at the start (a 3 can read as B)
+      if (bi === 0 && (OFF.tsclef || gs[0].a < bx + sp * 1.8 || (clefX > 0 && gs[0].a <= clefX))) { var t0 = readTall(gs[0].a, gs[0].b, top0 - sp * 0.3, top0 + sp * 1.7, TPL_L); if (!t0 || /[TAB]/.test(t0.s) || gs.length > 1) gI = 1; }
       var gg = gs[gI]; if (!gg) return;
       var up = readTall(gg.a, gg.b, top0 - sp * 0.4, mid, TPL_L), dn = readTall(gg.a, gg.b, mid, bot0 + sp * 0.4, TPL_L);
+      // only common signatures: a top digit that makes an odd one (8/4 for a bold 3/4) gives way to its runner-up
+      var okTs = function (u, d) { return d === '4' ? /^[2-7]$/.test(u) : d === '8' ? /^[35679]$/.test(u) : d === '2' ? /^[234]$/.test(u) : false; };
+      if (!OFF.tsfix && up && dn && /^\d$/.test(up.s) && /^(2|4|8)$/.test(dn.s) && !okTs(up.s, dn.s) && up.s2 && okTs(up.s2, dn.s) && up.margin < 0.12) up = { s: up.s2, score: up.score - up.margin, margin: 0, s2: up.s };
       if (up && dn && /^\d$/.test(up.s) && /^(2|4|8)$/.test(dn.s) && up.score > 0.5 && dn.score > 0.5 && +up.s > 0) { ts[bi] = up.s + '/' + dn.s; tsG[bi] = gg; }
       else if (up && dn && /^\d$/.test(up.s) && /^\d$/.test(dn.s) && up.score > 0.6 && dn.score > 0.6) tsG[bi] = gg; // digits stacked like a time signature: not a rest
       if (opt.dbgTs) opt.dbgTs.push({ bi: bi, bx: bx, gs: gs, gI: gI, up: up, dn: dn });
@@ -4926,7 +4930,10 @@ var LocalTab = (function () {
       var counts = [], dotMask = {}, visited = {};
       // dot: a small blob right of the stem
       var dot = false;
-      for (var cx = Math.round(sm.x + sp * 0.15); cx <= Math.round(sm.x + sp * 0.65) && !dot; cx++) for (var cy = Math.round(sm.y1 - sp * 1.6); cy <= Math.round(sm.y1 + sp * 0.1) && !dot; cy++) {
+      // (some engravers set the dot further right, level with the stem's foot)
+      var dotR = OFF.dotnear ? 0.65 : 1.0, dotB = OFF.dotnear ? 0.1 : 0.3;
+      for (var cx = Math.round(sm.x + sp * 0.15); cx <= Math.round(sm.x + sp * dotR) && !dot; cx++) for (var cy = Math.round(sm.y1 - sp * 1.6); cy <= Math.round(sm.y1 + sp * dotB) && !dot; cy++) {
+        if (cx > sm.x + sp * 0.65 && cy < sm.y1 - sp * 0.5) continue; // far out, only at the foot
         if (!dark(cx, cy) || visited[cx + ',' + cy]) continue;
         var stack = [[cx, cy]], seen = {}, n = 0, mx0 = cx, mx1 = cx, my0 = cy, my1 = cy, big = false;
         seen[cx + ',' + cy] = 1;
@@ -4953,7 +4960,7 @@ var LocalTab = (function () {
         if (!OFF.bthick) lens.forEach(function (l) { if (l >= sp * 0.85 && l <= sp * 1.35) c++; });
         counts.push(c); runL.push(lens);
       });
-      if (opt.dbgBeam) opt.dbgBeam.push([Math.round(sm.x), counts.join(''), JSON.stringify(runL)]);
+      if (opt.dbgBeam) opt.dbgBeam.push([Math.round(sm.x), counts.join(''), JSON.stringify(runL), 'dot', dot, Math.round(sm.y1)]);
       var L = Math.max(counts[0], counts[1], counts[2]), R = Math.max(counts[3], counts[4], counts[5]);
       // a beam reaches at least two of the three probe columns on its side
       var side = function (arr) { var m = 0; arr.forEach(function (v) { if (arr.filter(function (w) { return w >= v; }).length >= 2) m = Math.max(m, v); }); return m; };
@@ -5164,6 +5171,23 @@ var LocalTab = (function () {
             }
             on += q[j9];
           }
+        }
+      }
+      // the bar is short and some plain-stem beats stand in wide space: they are halves or dotted (an engraver that
+      // draws a half note's stem like a quarter's) — share the missing time by the room each one has
+      if (!OFF.halfsp && q.length >= 2 && q.every(function (v) { return v; }) && len - sum >= 0.49) {
+        var nbh = bar.beats.length, gaps = bar.beats.map(function (b, j) { return (j < nbh - 1 ? bar.beats[j + 1].x : bar.R - sp * 0.3) - b.x; });
+        var cand = [], ratios = [];
+        bar.beats.forEach(function (b, j) { var bm2 = b.stem && !b.stem.up ? beamsAt(b.stem) : null; if (!b.rest && q[j] === 1 && bm2 && !bm2.beams) cand.push(j); else if (q[j] <= 1 && gaps[j] > 0) ratios.push(gaps[j] / q[j]); });
+        ratios.sort(function (a, b) { return a - b; });
+        var pxq2 = ratios.length ? ratios[ratios.length >> 1] : (bar.R - bar.L) / len;
+        if (cand.length && cand.length <= 6) {
+          var need = Math.round((len - sum) * 2), EXT = [0, 1, 2, 4], bestE2 = null, bestErr = 1e9; // in halves of a quarter
+          (function pick2(k, acc, rem) {
+            if (k === cand.length) { if (rem === 0) { var err = 0; acc.forEach(function (e, m) { var sur = gaps[cand[m]] / pxq2 - 1; err += Math.pow(e / 2 - sur * 0.75, 2); }); if (err < bestErr) { bestErr = err; bestE2 = acc.slice(); } } return; }
+            EXT.forEach(function (e) { if (e <= rem) { acc.push(e); pick2(k + 1, acc, rem - e); acc.pop(); } });
+          })(0, [], need);
+          if (bestE2) { cand.forEach(function (j, m) { q[j] += bestE2[m] / 2; }); sum = q.reduce(function (a2, v) { return a2 + v; }, 0); }
         }
       }
       // every beat has its length but the bar is still short, with a long empty stretch after the last beat
