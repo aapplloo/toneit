@@ -4440,7 +4440,9 @@ var LocalTab = (function () {
           // ink running up into the next line's zone: a tall glyph (clef, time signature, rest) — unless a number was
           // just read right above on the previous line, i.e. two digits of a chord touching in a blurry photo
           // (never right at the start of the staff: that is where the clef and the time signature stand)
-          var stacked = a0 > X0 + sp * 5.5 && cutA[1] < (b0 - a0 + 1) * 0.5 && notes.some(function (n) { return n.s === i && Math.abs(n.x - (a0 + b0) / 2) < sp * 0.5; });
+          var above = notes.some(function (n) { return n.s === i && Math.abs(n.x - (a0 + b0) / 2) < sp * 0.5; });
+          // (a heavily blurred chord can touch across most of the width: a digit-wide run right under a number still is one)
+          var stacked = a0 > X0 + sp * 5.5 && above && (cutA[1] < (b0 - a0 + 1) * 0.5 || (!OFF.stack2 && cutA[1] < (b0 - a0 + 1) * 0.85 && b0 - a0 + 1 <= sp * 0.8 && notes.some(function (n) { return n.s === i && Math.abs(n.x - (a0 + b0) / 2) < sp * 0.25; })));
           // a stem drawn up from this number (rhythm written above the tab): one thin stroke carrying on through the
           // line above — not a tall sign
           var upStem = false;
@@ -4851,14 +4853,21 @@ var LocalTab = (function () {
         Object.keys(seen).forEach(function (key) { visited[key] = 1; });
         if (!big && n >= Math.max(3, sp * sp * 0.02)) { dot = true; Object.keys(seen).forEach(function (key) { dotMask[key] = 1; }); }
       }
+      var runL = [];
       [-0.6, -0.45, -0.3, 0.3, 0.45, 0.6].forEach(function (off) {
-        var cx2 = Math.round(sm.x + off * sp), c = 0, inb = false;
+        var cx2 = Math.round(sm.x + off * sp), c = 0, inb = false, rl = 0, lens = [];
         for (var cy2 = Math.round(sm.y1 - sp * 1.5); cy2 <= Math.round(sm.y1 + sp * 0.15); cy2++) {
           var d2 = dark(cx2, cy2) && !dotMask[cx2 + ',' + cy2] && (OFF.lineb || !isLineRow(cx2, cy2)); // beams drawn close under the staff: its bottom line is not a beam
           if (d2 && !inb) c++; inb = d2;
+          if (d2) rl++; else { if (rl) lens.push(rl); rl = 0; }
         }
-        counts.push(c);
+        if (rl) lens.push(rl);
+        // two beams blurred into one thick bar (a soft photo): a run about twice a beam's thickness counts twice
+        // (a much longer run is a neighbour's stem caught by the probe, not beams)
+        if (!OFF.bthick) lens.forEach(function (l) { if (l >= sp * 0.85 && l <= sp * 1.35) c++; });
+        counts.push(c); runL.push(lens);
       });
+      if (opt.dbgBeam) opt.dbgBeam.push([Math.round(sm.x), counts.join(''), JSON.stringify(runL)]);
       var L = Math.max(counts[0], counts[1], counts[2]), R = Math.max(counts[3], counts[4], counts[5]);
       // a beam reaches at least two of the three probe columns on its side
       var side = function (arr) { var m = 0; arr.forEach(function (v) { if (arr.filter(function (w) { return w >= v; }).length >= 2) m = Math.max(m, v); }); return m; };
