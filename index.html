@@ -3622,7 +3622,8 @@ var PhotoTab = (function () {
     return o;
   }
   // staff lines: rows mostly covered by long horizontal runs
-  function lineRows(B) {
+  function lineRows(B, thr) {
+    thr = thr || 0.22;
     var w = B.w, h = B.h, minRun = Math.max(6, Math.round(w / 80)), cov = new Float32Array(h), ext = [];
     for (var y = 0; y < h; y++) {
       var run = 0, c = 0, x0 = w, x1 = 0;
@@ -3633,7 +3634,7 @@ var PhotoTab = (function () {
       cov[y] = c / w; ext.push([x0, x1]);
     }
     var rows = [];
-    for (y = 1; y < h - 1; y++) if (cov[y] > 0.22 && cov[y] >= cov[y - 1] && cov[y] >= cov[y + 1]) {
+    for (y = 1; y < h - 1; y++) if (cov[y] > thr && cov[y] >= cov[y - 1] && cov[y] >= cov[y + 1]) {
       var last = rows[rows.length - 1];
       if (last && y - last.p <= 2) { if (cov[y] > last.c) { last.p = y; last.c = cov[y]; last.e = ext[y]; } }
       else rows.push({ p: y, c: cov[y], e: ext[y] });
@@ -3686,6 +3687,15 @@ var PhotoTab = (function () {
   function findStaves(B) {
     var rows = lineRows(B), used = {};
     var tab = groupStaves(rows, 6, used, B.h), std = groupStaves(rows, 5, used, B.h);
+    // a short last line of a song (one or two bars) covers too little of the page width for the first pass:
+    // look again with a low bar, keeping only staves spaced like the ones found
+    var OFFp = (typeof window !== 'undefined' && window.__omrOff) || {};
+    if (tab.length && !OFFp.shortst) {
+      var sps = tab.map(function (t) { return t.sp; }).sort(function (a, b) { return a - b; }), spM = sps[sps.length >> 1];
+      var rows2 = lineRows(B, 0.06).filter(function (r) { return !tab.concat(std).some(function (t) { return r.y >= t.top - t.sp * 0.6 && r.y <= t.bot + t.sp * 0.6; }); });
+      var more = groupStaves(rows2, 6, {}, B.h).filter(function (t) { return Math.abs(t.sp - spM) <= spM * 0.12 && t.x1 - t.x0 >= spM * 6; });
+      if (more.length) tab = tab.concat(more).sort(function (a, b) { return a.top - b.top; });
+    }
     // a notation staff right above a tab staff carries the rhythm: keep it with the strip
     tab.forEach(function (t) {
       var above = std.filter(function (s) { return s.bot < t.top && t.top - s.bot < t.sp * 9; }).pop();
@@ -5062,9 +5072,12 @@ var LocalTab = (function () {
       }
       return { beams: Math.min(3, Math.max(side(counts.slice(0, 3)), side(counts.slice(3)))), dot: false && dot }; // a dot under a note with its stem up is staccato
     }
+    // a stem's length below the staff (some engravers start every stem at the top note, inside the staff: only
+    // the part under the bottom line tells a half from a quarter)
+    function effLen(sm) { if (sm.up || OFF.efflen) return sm.len; var yb = lineY(5, Math.round(sm.x)) + sp * 0.3; return sm.y1 - Math.max(sm.y0, yb); }
     function durOf(b, medDn, medUp) {
       var sm = b.stem, bm = sm.up ? beamsUp(sm) : beamsAt(sm), med = sm.up ? medUp : medDn;
-      var d = bm.beams ? 1 / Math.pow(2, bm.beams) : (sm.len < med * 0.65 ? 2 : 1);
+      var d = bm.beams ? 1 / Math.pow(2, bm.beams) : (effLen(sm) < med * 0.65 ? 2 : 1);
       return bm.dot ? d * 1.5 : d;
     }
     function slashStem(r) {
@@ -5090,7 +5103,7 @@ var LocalTab = (function () {
         if (b && Math.abs(n.x - b.x) <= sp * 0.45 && !b.n.some(function (m) { return m.s === n.s; })) { b.n.push(n); b.x = (b.x * (b.n.length - 1) + n.x) / b.n.length; }
         else beats.push({ x: n.x, n: [n] });
       });
-      beats.forEach(function (b) { b.stem = stemAt(b.x) || (OFF.up ? null : stemUpAt(b)); if (b.stem) (b.stem.up ? stemLensUp : stemLens).push(b.stem.len); });
+      beats.forEach(function (b) { b.stem = stemAt(b.x) || (OFF.up ? null : stemUpAt(b)); if (b.stem) (b.stem.up ? stemLensUp : stemLens).push(effLen(b.stem)); });
       if (!restG) restG = findRests();
       var inRests = restG.filter(function (r) { return r.x > L0 + sp * 0.5 && r.x < R0 - sp * 0.3; });
       // a bar holding only one wide slanted sign in its middle, no numbers: the measure-repeat sign (%)
@@ -5135,6 +5148,18 @@ var LocalTab = (function () {
         else if (b.n.length) lastChord = b.n;
       });
     });
+    // how much room a plain quarter takes in this staff (from bars that add up with every beat stemmed): an
+    // engraver drawing half notes like quarters still gives them more room
+    var qGaps = [];
+    if (!OFF.qgap) outBars.forEach(function (bar) {
+      var tsp0 = bar.ts.split('/'), len0 = (+tsp0[0]) * 4 / (+tsp0[1]);
+      if (bar.beats.length < 2 || bar.beats.some(function (b) { return b.rest || !b.stem || b.stem.up; })) return;
+      var qs = bar.beats.map(function (b) { return durOf(b, medStem, medUp); }), tot = qs.reduce(function (a2, v) { return a2 + v; }, 0);
+      if (Math.abs(tot - len0) > 0.01) return;
+      bar.beats.forEach(function (b, j) { if (qs[j] !== 1 || beamsAt(b.stem).beams) return; var nx = j < bar.beats.length - 1 ? bar.beats[j + 1].x : bar.R - sp * 0.3; qGaps.push(nx - b.x); });
+    });
+    qGaps.sort(function (a2, b2) { return a2 - b2; });
+    var qGap = qGaps.length >= 2 ? qGaps[qGaps.length >> 1] : 0;
     var prevOut = null;
     var bars2 = outBars.map(function (bar) {
       var tsp = bar.ts.split('/'), len = (+tsp[0]) * 4 / (+tsp[1]);
@@ -5219,10 +5244,14 @@ var LocalTab = (function () {
         bar.beats.forEach(function (b, j) { var bm2 = b.stem && !b.stem.up ? beamsAt(b.stem) : null; if (!b.rest && q[j] === 1 && bm2 && !bm2.beams) cand.push(j); else if (q[j] <= 1 && gaps[j] > 0) ratios.push(gaps[j] / q[j]); });
         ratios.sort(function (a, b) { return a - b; });
         var pxq2 = ratios.length ? ratios[ratios.length >> 1] : (bar.R - bar.L) / len;
+        if (opt.dbgHalf) opt.dbgHalf.push({ bi: opt.dbgBeats ? opt.dbgBeats.length : -1, L: Math.round(bar.L), cand: cand.map(function (j) { return [Math.round(bar.beats[j].x), +(gaps[j] / pxq2).toFixed(2)]; }), pxq: +pxq2.toFixed(1), nr: ratios.length });
         if (cand.length && cand.length <= 6) {
           var need = Math.round((len - sum) * 2), EXT = [0, 1, 2, 4], bestE2 = null, bestErr = 1e9; // in halves of a quarter
           (function pick2(k, acc, rem) {
-            if (k === cand.length) { if (rem === 0) { var err = 0; acc.forEach(function (e, m) { var sur = gaps[cand[m]] / pxq2 - 1; err += Math.pow(e / 2 - sur * 0.75, 2); }); if (err < bestErr) { bestErr = err; bestE2 = acc.slice(); } } return; }
+            if (k === cand.length) { if (rem === 0) { var err = 0; acc.forEach(function (e, m) {
+              if (qGap) { var lg = (gaps[cand[m]] / qGap - 1) / 0.37; err += Math.pow(Math.log(1 + e / 2) / Math.LN2 - lg, 2); } // room grows by about a third per doubling
+              else { var sur = gaps[cand[m]] / pxq2 - 1; err += Math.pow(e / 2 - sur * 0.75, 2); }
+            }); if (err < bestErr) { bestErr = err; bestE2 = acc.slice(); } } return; }
             EXT.forEach(function (e) { if (e <= rem) { acc.push(e); pick2(k + 1, acc, rem - e); acc.pop(); } });
           })(0, [], need);
           if (bestE2) { cand.forEach(function (j, m) { q[j] += bestE2[m] / 2; }); sum = q.reduce(function (a2, v) { return a2 + v; }, 0); }
