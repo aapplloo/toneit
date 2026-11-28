@@ -4911,28 +4911,53 @@ var LocalTab = (function () {
       if (bar.repeat && (prevOut || opt.prevBar)) { var src = prevOut || opt.prevBar; return (prevOut = { ts: bar.ts, beats: JSON.parse(JSON.stringify(src.beats)), repeat: true }); }
       var o = barOut(bar, len); prevOut = o; return o;
     });
+    // how far ink runs up and down (lines bridged) around x inside the staff: a digit is under a line space tall
+    function inkExtent(xc) {
+      var best = 0, run = 0, gapRows = 0;
+      for (var yy = Math.round(lineY(0, xc) + tt + 1); yy <= Math.round(lineY(5, xc) - tt - 1); yy++) {
+        var on = false, lineAll = true;
+        for (var cx = Math.round(xc - sp * 0.3); cx <= Math.round(xc + sp * 0.3); cx++) { if (!isLineRow(cx, yy)) { lineAll = false; if (dark(cx, yy)) on = true; } }
+        if (on) { run += 1 + gapRows; gapRows = 0; best = Math.max(best, run); }
+        else if (lineAll && run) gapRows++;
+        else { run = 0; gapRows = 0; }
+      }
+      return best;
+    }
+    var staffStems = -1;
     function barOut(bar, len) {
       if (!bar.beats.length) return { ts: bar.ts, beats: [{ q: len, r: 1 }], empty: true };
+      if (!(staffStems >= 0)) staffStems = stemLens.length + stemLensUp.length >= 3 ? 1 : 0; // (barOut runs before this declaration line is reached)
+      // in a staff that writes its rhythm, a lone "number" with no stem that stands much taller than a digit is a
+      // rest sign (a quarter-rest zigzag reads as a 1)
+      if (staffStems && !OFF.restglyph) bar.beats.forEach(function (b) {
+        if (b.stem || b.rest || b.slash || b.n.length !== 1) return;
+        var ext = inkExtent(b.x); b.ext = +(ext / sp).toFixed(2); if (ext >= sp * 1.15) { b.rest = true; b.rh = ext / sp; b.n = []; }
+      });
       var q = bar.beats.map(function (b) {
         if (b.rest || !b.stem) return null;
         return durOf(b, medStem, medUp);
       });
       var sum = q.reduce(function (a2, v) { return a2 + (v || 0); }, 0);
-      var noteQ = bar.beats.every(function (b, j) { return b.rest || q[j]; }), rests = bar.beats.filter(function (b) { return b.rest; });
+      // a note drawn with no stem where the others have one is a half or whole note: let it take what the bar lacks
+      var freeN = staffStems && !OFF.freeN ? bar.beats.map(function (b, j) { return !b.rest && b.n.length && q[j] == null; }) : bar.beats.map(function () { return false; });
+      var noteQ = bar.beats.every(function (b, j) { return b.rest || q[j] || freeN[j]; }), rests = bar.beats.filter(function (b, j) { return b.rest || freeN[j]; });
       if (noteQ && rests.length) {
         var miss = len - sum;
-        if (miss < 0.2) { bar.beats = bar.beats.filter(function (b) { return !b.rest; }); q = q.filter(function (v) { return v; }); }
+        if (miss < 0.2 && freeN.some(function (v) { return v; })) { /* no time left for a stemless note: leave it to the spacing fallback */ }
+        else if (miss < 0.2) { bar.beats = bar.beats.filter(function (b) { return !b.rest; }); q = q.filter(function (v) { return v; }); }
         else { // share the missing time between the rests by their spacing, on a 16th grid
-          var wsum = 0, ws = bar.beats.map(function (b, j) { if (!b.rest) return 0; var nx = j < bar.beats.length - 1 ? bar.beats[j + 1].x : bar.R; var w = Math.max(sp, nx - b.x); wsum += w; return w; });
+          var isFree = function (b, j) { return b.rest || freeN[j]; };
+          var wsum = 0, ws = bar.beats.map(function (b, j) { if (!isFree(b, j)) return 0; var nx = j < bar.beats.length - 1 ? bar.beats[j + 1].x : bar.R; var w = Math.max(sp, nx - b.x); wsum += w; return w; });
           var total = Math.round(miss * 4), idx = [], want = [];
-          var typed = [];
-          bar.beats.forEach(function (b, j) { if (b.rest) { idx.push(j); want.push(ws[j] / wsum * total); typed.push(b.rh >= 1.45 ? 4 : b.rh >= 0.8 ? 2 : 0); } }); // a tall zigzag (~1.7 lines) is a quarter rest, a short hook (~1 line) an eighth
-          // rests come in standard lengths: pick the combination closest to the spacing that fills the bar
-          var STD = [1, 2, 3, 4, 6, 8, 12, 16], bestC = null, bestE = 1e9;
+          var typed = [], isNote = [];
+          bar.beats.forEach(function (b, j) { if (isFree(b, j)) { idx.push(j); want.push(ws[j] / wsum * total); isNote.push(!b.rest); typed.push(b.rest ? (b.rh >= 1.45 ? 4 : b.rh >= 0.8 ? 2 : 0) : 0); } }); // a tall zigzag (~1.7 lines) is a quarter rest, a short hook (~1 line) an eighth
+          // rests come in standard lengths: pick the combination closest to the spacing that fills the bar; a note
+          // without a stem is a half or whole (or dotted half)
+          var STD = [1, 2, 3, 4, 6, 8, 12, 16], NSTD = [8, 16, 12], bestC = null, bestE = 1e9;
           (function pick(k, acc, rem) {
             if (k === idx.length) { if (rem === 0) { var e = 0; acc.forEach(function (u, m) { e += Math.pow(u - want[m], 2) + (typed[m] && u !== typed[m] ? 6 : 0); }); if (e < bestE) { bestE = e; bestC = acc.slice(); } } return; }
             if (idx.length > 4) return;
-            STD.forEach(function (u) { if (u <= rem) { acc.push(u); pick(k + 1, acc, rem - u); acc.pop(); } });
+            (isNote[k] ? NSTD : STD).forEach(function (u) { if (u <= rem) { acc.push(u); pick(k + 1, acc, rem - u); acc.pop(); } });
           })(0, [], total);
           if (!bestC) { bestC = want.map(function () { return 0; }); bestC[bestC.length - 1] = total; }
           idx.forEach(function (j, m) { q[j] = bestC[m] / 4; });
@@ -4941,8 +4966,23 @@ var LocalTab = (function () {
           sum = q.reduce(function (a2, v) { return a2 + (v || 0); }, 0);
         }
       }
+      // short by a 16th or two with an 8th + 16th pair starting on a beat: that 8th is dotted (its dot sat in a beam)
+      if (!OFF.dotfix && q.every(function (v) { return v; })) {
+        var short = Math.round((len - sum) * 4);
+        if (short > 0 && short <= 3) {
+          var on = 0;
+          for (var j9 = 0; j9 < q.length - 1 && short > 0; j9++) {
+            var onBeat = Math.abs(on - Math.round(on)) < 0.01;
+            if (onBeat && !bar.beats[j9].rest && !bar.beats[j9 + 1].rest && ((q[j9] === 0.5 && q[j9 + 1] === 0.25) || (q[j9] === 0.25 && q[j9 + 1] === 0.5))) {
+              var jd = q[j9] === 0.5 ? j9 : j9 + 1; q[jd] = 0.75; short--; sum += 0.25;
+              on += q[j9] + q[j9 + 1]; j9++; continue;
+            }
+            on += q[j9];
+          }
+        }
+      }
       var ok = q.every(function (v) { return v; }) && Math.abs(sum - len) <= len * 0.08;
-      if (opt.dbgBeats) opt.dbgBeats.push(bar.beats.map(function (b, j) { return [Math.round(b.x), b.rest ? 'r' : b.slash ? '/' : b.n.map(function (n) { return n.s + ':' + n.fret; }).join(','), b.stem ? (b.stem.up ? 'U' : 'D') + Math.round(b.stem.len) : '-', q[j]]; }));
+      if (opt.dbgBeats) opt.dbgBeats.push(bar.beats.map(function (b, j) { return [Math.round(b.x), b.rest ? 'r' : b.slash ? '/' : b.n.map(function (n) { return n.s + ':' + n.fret; }).join(','), b.stem ? (b.stem.up ? 'U' : 'D') + Math.round(b.stem.len) : '-', q[j], b.ext]; }));
       if (!ok && bar.beats.length === 1) { q = [len]; ok = true; }
       if (!ok) { // from spacing, on a 16th grid
         fallback++;
