@@ -4499,6 +4499,20 @@ var LocalTab = (function () {
             var topBar = 0; for (fy = qa; fy <= Math.round(qa + h * 0.2); fy++) { var tc = 0; for (fx = pa; fx <= pb; fx++) if (ink(fx, fy) > 0.5) tc++; topBar = Math.max(topBar, tc); }
             if (foot <= w * 0.45 && topBar >= w * 0.85) cl = { s: '7', score: Math.max(cl.score, 0.6), margin: 0.06, s2: '2' };
           }
+          // round digits the templates mix up (6/0, 9/0, 8/0, 5/6): look where each one is open
+          if (!OFF.round && /[0689]|5/.test(cl.s) && (cl.score < 0.86 || opt.dbgRound) && w >= 4 && h >= 8) {
+            var zone = function (fx0, fx1, fy0, fy1) { var c = 0, t2 = 0; for (var zy = Math.round(qa + h * fy0); zy <= Math.round(qa + h * fy1); zy++) for (var zx = Math.round(pa + w * fx0); zx <= Math.round(pa + w * fx1 - 1); zx++) { t2++; if (ink(zx, zy) > 0.5) c++; } return t2 ? c / t2 : 0; };
+            var rUp = zone(0.72, 1, 0.24, 0.4), lLow = zone(0, 0.28, 0.6, 0.76), mid = zone(0.38, 0.62, 0.42, 0.58), lUp = zone(0, 0.28, 0.24, 0.4), rLow = zone(0.72, 1, 0.6, 0.76);
+            var nw = null;
+            // a 0 is hollow in the middle; a 6 has its loop's top there and is open upper right, a 9 lower left
+            if (!OFF.r06 && cl.score < 0.86 && cl.s === '0' && mid >= 0.15 && rUp <= 0.25 && lLow >= 0.5) nw = '6';
+            else if (!OFF.r09 && cl.score < 0.86 && cl.s === '0' && mid >= 0.15 && lLow <= 0.25 && rUp >= 0.4) nw = '9';
+            else if (OFF.r08on && cl.score < 0.86 && cl.s === '0' && mid >= 0.3 && rUp >= 0.3 && lLow >= 0.4) nw = '8';
+            // a 5's lower bowl opens to the left
+            else if (!OFF.r65 && cl.score < 0.86 && cl.s === '6' && lLow <= 0.4 && rLow >= 0.4) nw = '5';
+            if (opt.dbgRound) opt.dbgRound.push([pa, cl.s, +cl.score.toFixed(2), +rUp.toFixed(2), +lLow.toFixed(2), +mid.toFixed(2), +lUp.toFixed(2), +rLow.toFixed(2), nw]);
+            if (nw) cl = { s: nw, score: Math.max(cl.score, 0.74), margin: 0.06, s2: cl.s };
+          }
           if (opt.debug) opt.debug.push({ ly: lyc, stemTop: Math.min.apply(null, Array.prototype.slice.call(stemTop, pa, pb + 1)), probe: lineY(5, pa) + sp * 0.9, line: i, x: pa, w: w, h: h, s: cl.s, score: +cl.score.toFixed(2), m: +cl.margin.toFixed(2), img: (function () { var a2 = []; for (var yy2 = 0; yy2 < h; yy2++) { var row = ''; for (var xx2 = 0; xx2 < w; xx2++) row += ink(pa + xx2, qa + yy2) > 0.5 ? '#' : '.'; a2.push(row); } return a2; })() });
           return { a: pa, b: pb, s: cl.s, score: cl.score, margin: cl.margin, s2: cl.s2 };
         }
@@ -4550,6 +4564,29 @@ var LocalTab = (function () {
         }
         return out;
       }
+      var lyX = function (xx) { return lineY(i, xx); }, armDiag = null;
+      var arms = function (xc, hw, dyc) {
+        var ly = lyX(xc) + (dyc || 0), ok = 0, n = 0, hx = Math.min(hw || sp * 0.45, sp * 0.6), hy = Math.min(sp * 0.42, hx * 1.25);
+        [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(function (dd) {
+          var hit = 0, tot = 0;
+          // along the arm, scaled to this X's own width (some fonts draw it narrow and tall)
+          for (var f = 0.3; f <= 0.81; f += 0.085) { tot++; var px = Math.round(xc + dd[0] * f * hx), py = Math.round(ly + dd[1] * f * hy); if (dark(px, py) || dark(px + 1, py) || dark(px - 1, py)) hit++; }
+          n++; if (hit >= tot * 0.8) ok++;
+        });
+        armDiag = [xc, ok, Math.round(ly), +hx.toFixed(1), +hy.toFixed(1)];
+        if (ok < 4) return false;
+        // not a number: the middle of each side (left/right of centre, on the line's band) is open
+        var open = 0; [-1, 1].forEach(function (sd) { var px = Math.round(xc + sd * sp * 0.4); if (!dark(px, Math.round(ly - sp * 0.12)) && !dark(px, Math.round(ly + sp * 0.12)) || !dark(px, Math.round(ly - sp * 0.3))) open++; });
+        armDiag.push('open', open);
+        if (open < 1) return false;
+        if (UP) return true; // (a stem runs up the middle)
+        // no stem: the V above and below the crossing is open in the middle, and so are the sides at the crossing
+        var vy = Math.max(sp * 0.3, hy * 0.85), lightAt = function (yy) { return !dark(xc, yy) || !dark(xc - 1, yy) || !dark(xc + 1, yy); };
+        var vOpen = lightAt(Math.round(ly - vy)) && lightAt(Math.round(ly + vy));
+        var sOpen = !dark(Math.round(xc - sp * 0.32), ly) && !dark(Math.round(xc + sp * 0.32), ly) || isLineRow(Math.round(xc - sp * 0.32), ly) && isLineRow(Math.round(xc + sp * 0.32), ly);
+        armDiag.push('v', vOpen, 's', sOpen);
+        return vOpen && sOpen;
+      };
       // characters → notes: digits close together are one number; ( ) ghost, < > harmonic
       var cur = null;
       var flush = function () {
@@ -4565,7 +4602,28 @@ var LocalTab = (function () {
         } else if (cur.dead) { glyphs++; if (cur.unsure) low++; notes.push({ s: i + 1, x: (cur.a + cur.b) / 2, dead: true, fret: 0, unsure: cur.unsure }); }
         cur = null;
       };
-      toks.forEach(function (tk) {
+      // an X drawn as tall as the line space can fall apart into a '>' or '(' and a rejected sliver: put the
+      // pieces back together and test the four arms
+      var usedX = {};
+      var xFromBracket = function (k) {
+        var tk = toks[k], a = tk.a, b = tk.b, used = [k], gap = sp * 0.35;
+        var grow = true;
+        while (grow) {
+          grow = false;
+          toks.forEach(function (t2, k2) { if (used.indexOf(k2) < 0 && /[<>()X]/.test(t2.s) && t2.a - b <= gap && a - t2.b <= gap && (t2.a >= b - 1 || t2.b <= a + 1)) { a = Math.min(a, t2.a); b = Math.max(b, t2.b); used.push(k2); grow = true; } });
+          tallRuns.forEach(function (r) { if (r[0] - b <= gap && a - r[1] <= gap && (r[0] > b || r[1] < a)) { a = Math.min(a, r[0]); b = Math.max(b, r[1]); grow = true; } });
+        }
+        var w = b - a + 1; if (w < sp * 0.4 || w > sp * 1.4) return null;
+        var xc = (a + b) / 2, hw = w / 2, hit = false, dyMax = Math.round(sp * 0.3);
+        for (var dx = -2; dx <= 2 && !hit; dx++) for (var dyc = -dyMax; dyc <= dyMax && !hit; dyc++) if (arms(Math.round(xc + dx), hw, dyc)) hit = true;
+        return hit ? { x: xc, used: used, a: a, b: b } : null;
+      };
+      toks.forEach(function (tk, k) {
+        if (usedX[k]) return;
+        if (!OFF.xbr && /[<>()]/.test(tk.s)) {
+          var xr = xFromBracket(k);
+          if (xr) { flush(); xr.used.forEach(function (u) { usedX[u] = 1; }); tallRuns = tallRuns.filter(function (r) { return r[1] < xr.a || r[0] > xr.b; }); glyphs++; notes.push({ s: i + 1, x: xr.x, dead: true, fret: 0, unsure: false }); return; }
+        }
         if (opt.dbgTok) opt.dbgTok.push([i, tk.a, tk.b, tk.s, +tk.score.toFixed(2)]);
         if (!OFF.slash && /\d/.test(tk.s) && slashy(tk.a, tk.b, i)) { flush(); slashXs.push((tk.a + tk.b) / 2); return; } // a rhythm slash read as a digit
         var near = cur && tk.a - cur.b <= sp * 0.32;
@@ -4587,29 +4645,6 @@ var LocalTab = (function () {
       /* a big X (muted note) with its stem running up through its middle: the stem splits it into two halves that
          read as nothing. Look for the four arms of an X around each stem crossing this line */
       if (!OFF.xstem) {
-        var lyX = function (xx) { return lineY(i, xx); }, armDiag = null;
-        var arms = function (xc, hw, dyc) {
-          var ly = lyX(xc) + (dyc || 0), ok = 0, n = 0, hx = Math.min(hw || sp * 0.45, sp * 0.6), hy = Math.min(sp * 0.42, hx * 1.25);
-          [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(function (dd) {
-            var hit = 0, tot = 0;
-            // along the arm, scaled to this X's own width (some fonts draw it narrow and tall)
-            for (var f = 0.3; f <= 0.81; f += 0.085) { tot++; var px = Math.round(xc + dd[0] * f * hx), py = Math.round(ly + dd[1] * f * hy); if (dark(px, py) || dark(px + 1, py) || dark(px - 1, py)) hit++; }
-            n++; if (hit >= tot * 0.8) ok++;
-          });
-          armDiag = [xc, ok, Math.round(ly), +hx.toFixed(1), +hy.toFixed(1)];
-          if (ok < 4) return false;
-          // not a number: the middle of each side (left/right of centre, on the line's band) is open
-          var open = 0; [-1, 1].forEach(function (sd) { var px = Math.round(xc + sd * sp * 0.4); if (!dark(px, Math.round(ly - sp * 0.12)) && !dark(px, Math.round(ly + sp * 0.12)) || !dark(px, Math.round(ly - sp * 0.3))) open++; });
-          armDiag.push('open', open);
-          if (open < 1) return false;
-          if (UP) return true; // (a stem runs up the middle)
-          // no stem: the V above and below the crossing is open in the middle, and so are the sides at the crossing
-          var vy = Math.max(sp * 0.3, hy * 0.85), lightAt = function (yy) { return !dark(xc, yy) || !dark(xc - 1, yy) || !dark(xc + 1, yy); };
-          var vOpen = lightAt(Math.round(ly - vy)) && lightAt(Math.round(ly + vy));
-          var sOpen = !dark(Math.round(xc - sp * 0.32), ly) && !dark(Math.round(xc + sp * 0.32), ly) || isLineRow(Math.round(xc - sp * 0.32), ly) && isLineRow(Math.round(xc + sp * 0.32), ly);
-          armDiag.push('v', vOpen, 's', sOpen);
-          return vOpen && sOpen;
-        };
         // candidates: the gap between two too-tall halves, or a too-tall run on its own
         var cands = [];
         tallRuns.forEach(function (r, k) { var nx = tallRuns[k + 1]; if (nx && nx[0] - r[1] <= sp * 0.35) cands.push([(r[1] + nx[0]) / 2, (nx[1] - r[0] + 1) / 2]); else if (!(k && r[0] - tallRuns[k - 1][1] <= sp * 0.35)) cands.push([(r[0] + r[1]) / 2, (r[1] - r[0] + 1) / 2]); });
