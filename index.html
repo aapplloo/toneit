@@ -2925,6 +2925,12 @@ var PdfTab = (function () {
         });
         var dedup = [];
         items.forEach(function (t) { if (!dedup.some(function (u) { return u.s === t.s && Math.abs(u.x0 - t.x0) < 0.9 && Math.abs(u.base - t.base) < 0.4; })) dedup.push(t); });
+        // hairline rectangles are lines too (some engravers fill thin boxes instead of stroking staff lines and stems)
+        rects.forEach(function (r) {
+          var w = r.x1 - r.x0, h = r.y1 - r.y0;
+          if (h <= 2 && w > 1 && w > h * 4) { var yc = (r.y0 + r.y1) / 2; lines.push({ x0: r.x0, x1: r.x1, y0: yc, y1: yc, ax: r.x0, ay: yc, bx: r.x1, by: yc, w: h, fromRect: true }); }
+          else if (w <= 2 && h > 1 && h > w * 4) { var xc = (r.x0 + r.x1) / 2; lines.push({ x0: xc, x1: xc, y0: r.y0, y1: r.y1, ax: xc, ay: r.y0, bx: xc, by: r.y1, w: w, fromRect: true }); }
+        });
         return { W: vp.viewBox[2] - X0, H: H, lines: lines, rects: rects, curves: curves, text: dedup };
       });
     });
@@ -2962,6 +2968,7 @@ var PdfTab = (function () {
   var FLAG = { 0xE240: 0.5, 0xE241: 0.5, 0xE242: 0.25, 0xE243: 0.25, 0xE244: 0.125, 0xE245: 0.125 };
 
   function staffData(pg, st, prevSt, nextSt) {
+    var OFF = (typeof window !== 'undefined' && window.__omrOff) || {};
     var sp = st.sp, top = st.top, bot = st.bot;
     // bar lines: thin rects or stroked verticals spanning the staff
     var bx = [];
@@ -2974,22 +2981,43 @@ var PdfTab = (function () {
     if (bars[bars.length - 1] < st.x1 - sp * 3) bars.push(st.x1);
     // fret text on the lines
     var inStaff = pg.text.filter(function (t) { return !isMusic(t) && t.yc > top - sp * 0.65 && t.yc < bot + sp * 0.65 && t.x0 > st.x0 - 2 && t.x0 < st.x1 + 2; });
+    var V = pg.lines.filter(function (l) { return l.x1 - l.x0 < 0.4; });
+    var stems = V.filter(function (l) { return l.w < (OFF.pdfstemw ? 0.9 : Math.max(0.9, sp * 0.12)) && l.y1 > bot + sp * 0.94 && l.y1 < bot + sp * 3.95 && l.y0 > top - sp * 0.31 && l.y1 - l.y0 < sp * (OFF.pdfstem ? 6.3 : 9); })
+      .map(function (l) { return { x: l.x0, y0: l.y0, y1: l.y1 }; });
     var toks = [];
     inStaff.forEach(function (t) {
-      var str = t.s.trim(); if (!/^[0-9xX()<>]+$/.test(str)) return;
+      var raw = t.s.replace(/\s+$/, ''), str = raw.replace(/^\s+/, ''); if (!/^[0-9xX()<> ]+$/.test(str) || !str.trim()) return;
       var s = Math.round((t.yc - top) / sp) + 1; if (s < 1 || s > 6) return;
       if (Math.abs(t.yc - (top + (s - 1) * sp)) > sp * 0.5) return;
-      var cw = (t.x1 - t.x0) / str.length;
-      for (var i = 0; i < str.length; i++) toks.push({ s: s, txt: str[i], x0: t.x0 + i * cw, x1: t.x0 + (i + 1) * cw });
+      var lead = raw.length - str.length, cw = (t.x1 - t.x0) / Math.max(1, raw.length);
+      if (!/\s/.test(str) || OFF.pdfsplit) {
+        for (var i = 0; i < str.length; i++) { if (str[i] === ' ') continue; toks.push({ s: s, txt: str[i], x0: t.x0 + (i + lead) * cw, x1: t.x0 + (i + lead + 1) * cw, gapBefore: i > 0 && str[i - 1] === ' ' }); }
+        return;
+      }
+      // one text item holding several numbers along the line ("13 15"): the gaps between them are not real
+      // characters, so place the first number at the left edge and each later one on the stem it sits on
+      var groups = [], m, re = /\S+/g; while ((m = re.exec(str))) groups.push({ txt: m[0], i: m.index });
+      var nd = groups.reduce(function (q, g) { return q + g.txt.length; }, 0), dw = Math.min(t.size * 0.556, (t.x1 - t.x0) / nd);
+      var trail = /\s$/.test(t.s), prevEnd = -1e9;
+      groups.forEach(function (g, gi) {
+        var w = g.txt.length * dw, gx0 = t.x0 + (g.i + lead) * cw;
+        if (gi === 0) gx0 = t.x0;
+        else {
+          if (gi === groups.length - 1 && !trail) gx0 = t.x1 - w;
+          var est = gx0 + w / 2, best = null;
+          stems.forEach(function (st2) { if (st2.x - w / 2 < prevEnd + dw * 0.2 || st2.x > t.x1 + dw) return; var d = Math.abs(st2.x - est); if (!best || d < best.d) best = { d: d, x: st2.x }; });
+          if (best && best.d < sp * 1.6) gx0 = best.x - w / 2;
+          gx0 = Math.max(gx0, prevEnd + dw * 0.2);
+        }
+        for (var j = 0; j < g.txt.length; j++) toks.push({ s: s, txt: g.txt[j], x0: gx0 + j * dw, x1: gx0 + (j + 1) * dw, gapBefore: gi > 0 && j === 0 });
+        prevEnd = gx0 + w;
+      });
     });
-    var V = pg.lines.filter(function (l) { return l.x1 - l.x0 < 0.4; });
-    var stems = V.filter(function (l) { return l.w < 0.9 && l.y1 > bot + sp * 0.94 && l.y1 < bot + sp * 3.95 && l.y0 > top - sp * 0.31 && l.y1 - l.y0 < sp * 6.3; })
-      .map(function (l) { return { x: l.x0, y0: l.y0, y1: l.y1 }; });
     var beams = pg.rects.filter(function (r) { return r.y1 - r.y0 < sp * 0.5 && r.x1 - r.x0 > sp * 0.16 && r.y0 > bot && r.y0 < bot + sp * 3.95; });
     var gl = pg.text.filter(function (t) { return isMusic(t) && t.base > top - sp * 6.3 && t.base < bot + sp * 4.5; })
       .map(function (t) { return { c: glyphCode(t), x0: t.x0, x1: t.x1, y: t.base }; });
     var above = pg.text.filter(function (t) { return !isMusic(t) && t.base < top + sp * 0.2 && t.base > top - sp * 6.5 && (!prevSt || t.base > prevSt.bot + sp * 2.5); });
-    var below = pg.text.filter(function (t) { return !isMusic(t) && t.base > bot + sp * 0.6 && t.base < bot + sp * 5.5; });
+    var below = pg.text.filter(function (t) { return !isMusic(t) && t.base > bot + sp * 0.6 && t.base < bot + sp * 5.5 && (OFF.pdfbelow || (t.yc > bot + sp * 0.65 && (!nextSt || t.yc < nextSt.top - sp * 0.65))); });
     var diag = pg.lines.filter(function (l) { return l.x1 - l.x0 > 0.5 && l.y1 - l.y0 > 0.5 && l.y0 > top - sp * 0.8 && l.y1 < bot + sp * 0.8; });
     var dashes = pg.lines.filter(function (l) { return l.y0 < top - sp * 0.3 && l.y0 > top - sp * 6.5 && ((l.y1 - l.y0 < 0.3 && l.x1 - l.x0 < sp * 60) || (l.x1 - l.x0 < 0.3 && l.y1 - l.y0 < sp * 1.3)); });
     // left-margin label (track name)
@@ -3001,18 +3029,48 @@ var PdfTab = (function () {
 
   /* ---------- one staff → bars of beats ---------- */
   function pg_lines(D) { return D.dashes; }
+  // some engravers (alphaTab) draw half-note stems in tab exactly like quarter stems: when a bar comes up short,
+  // lengthen plain-stem notes, choosing the ones whose spacing looks longest (spacing grows ~ duration^0.35)
+  function halfFill(bb, deficit, xEnd, sp) {
+    var cand = [], opts = [];
+    bb.forEach(function (b, i) {
+      if (b.rest || !b.stem || b.nl || b.fl || b.tup) return;
+      var o = b.dur === 1 ? [1, 1.5, 2, 3, 4] : b.dur === 1.5 ? [1.5, 3] : null;
+      if (o) { cand.push(i); opts.push(o); }
+    });
+    if (!cand.length || cand.length > 8) return false;
+    var gaps = bb.map(function (b, i) { return Math.max(sp * 0.3, (i + 1 < bb.length ? bb[i + 1].x : xEnd) - b.x); });
+    var best = null, cur = bb.map(function (b) { return b.dur; });
+    (function rec(k, left) {
+      if (k === cand.length) {
+        if (Math.abs(left) > 0.01) return;
+        var r = cur.map(function (d, i) { return Math.log(gaps[i]) - 0.346 * Math.log(d) / Math.LN2; });
+        var mu = r.reduce(function (s, v) { return s + v; }, 0) / r.length, v = r.reduce(function (s, x) { return s + (x - mu) * (x - mu); }, 0);
+        var nDot = cand.filter(function (i) { return cur[i] === 1.5 || cur[i] === 3; }).length - cand.filter(function (i) { return bb[i].dur === 1.5; }).length;
+        v += nDot * 0.05;
+        if (!best || v < best.v) best = { v: v, d: cur.slice() };
+        return;
+      }
+      var i = cand[k];
+      opts[k].forEach(function (d) { var add = d - bb[i].dur; if (add > left + 0.01) return; cur[i] = d; rec(k + 1, left - add); cur[i] = bb[i].dur; });
+    })(0, deficit);
+    if (!best) return false;
+    bb.forEach(function (b, i) { b.dur = best.d[i]; });
+    return true;
+  }
   function parseStaff(D, ts) {
+    var OFF = (typeof window !== 'undefined' && window.__omrOff) || {};
     var st = D.st, sp = st.sp, top = st.top, bot = st.bot;
     // merge split digits ("1","0" -> 10) unless they sit on two different stems
     var raw = D.toks.slice().sort(function (a, b) { return a.s - b.s || a.x0 - b.x0; }), toks = [];
     raw.forEach(function (n) {
       var p = toks[toks.length - 1];
-      if (p && p.s === n.s && /\d/.test(n.txt) && /^\d+$/.test(p.txt) && n.x0 - p.x1 < sp * 0.12) {
+      if (p && p.s === n.s && /\d/.test(n.txt) && /^\d+$/.test(p.txt) && n.x0 - p.x1 < sp * 0.12 && !n.gapBefore) {
         var c1 = (p.x0 + p.x1) / 2, c2 = (n.x0 + n.x1) / 2;
         var s1 = D.stems.some(function (s) { return Math.abs(s.x - c1) < sp * 0.25; }), s2 = D.stems.some(function (s) { return Math.abs(s.x - c2) < sp * 0.25; });
         if (parseInt(p.txt + n.txt, 10) <= 24 && !(s1 && s2 && c2 - c1 > sp * 0.39)) { p.txt += n.txt; p.x1 = n.x1; return; }
       }
-      toks.push({ s: n.s, txt: n.txt, x0: n.x0, x1: n.x1 });
+      toks.push({ s: n.s, txt: n.txt, x0: n.x0, x1: n.x1, gapBefore: n.gapBefore });
     });
     var notes = [];
     for (var i = 0; i < toks.length; i++) {
@@ -3043,10 +3101,10 @@ var PdfTab = (function () {
       if (b.rest) { var dr = D.gl.some(function (g) { return g.c === 0xE1E7 && g.x0 - b.g.x1 > 0 && g.x0 - b.g.x1 < sp * 1.1 && Math.abs(g.y - b.g.y) < sp * 1.9; }); b.dur = b.rest * (dr ? 1.5 : 1); return; }
       var s = b.stem; if (!s) { b.dur = null; return; }
       var lv = {}; D.beams.forEach(function (bm) { if (bm.x0 - sp * 0.13 <= s.x && s.x <= bm.x1 + sp * 0.13) lv[Math.round(bm.y0 * 2) / 2] = 1; });
-      var nl = Object.keys(lv).length, fl = D.gl.filter(function (g) { return FLAG[g.c] && Math.abs(g.x0 - s.x) < sp * 0.5; })[0];
+      var nl = Object.keys(lv).length, fl = D.gl.filter(function (g) { return FLAG[g.c] && Math.abs(g.x0 - s.x) < sp * 0.5 && (OFF.pdfflag || (g.y > s.y0 - sp && g.y < s.y1 + sp * 2)); })[0];
       var d = nl ? 0.5 / Math.pow(2, nl - 1) : fl ? FLAG[fl.c] : (s.y1 - s.y0 < sp * 1.41 ? 2 : 1);
       var dot = D.gl.some(function (g) { return g.c === 0xE1E7 && g.x0 - s.x > sp * 0.08 && g.x0 - s.x < sp * 1.1 && g.y > bot - sp * 0.6; });
-      b.dur = d * (dot ? 1.5 : 1);
+      b.dur = d * (dot ? 1.5 : 1); b.sl = (s.y1 - s.y0) / sp; b.nl = nl; b.fl = !!fl; b.dot = dot;
       b.stac = D.gl.some(function (g) { return g.c === 0xE4A2 && Math.abs((g.x0 + g.x1) / 2 - s.x) < sp * 0.5; });
       var trem = D.gl.filter(function (g) { return g.c >= 0xE220 && g.c <= 0xE224 && Math.abs((g.x0 + g.x1) / 2 - s.x) < sp * 0.6; })[0];
       if (trem) b.trem = [8, 16, 32, 64, 128][trem.c - 0xE220];
@@ -3131,7 +3189,22 @@ var PdfTab = (function () {
     // time signature glyphs (stacked digits E080–E089)
     var tsg = D.gl.filter(function (g) { return g.c >= 0xE080 && g.c <= 0xE089; }).sort(function (a, b) { return a.x0 - b.x0 || a.y - b.y; });
     var tsMarks = [];
-    for (var z = 0; z + 1 < tsg.length; z++) if (Math.abs(tsg[z].x0 - tsg[z + 1].x0) < sp && tsg[z + 1].y > tsg[z].y + sp) { tsMarks.push({ x: tsg[z].x0, num: tsg[z].c - 0xE080, den: tsg[z + 1].c - 0xE080 }); z++; }
+    if (OFF.pdfts) { for (var z = 0; z + 1 < tsg.length; z++) if (Math.abs(tsg[z].x0 - tsg[z + 1].x0) < sp && tsg[z + 1].y > tsg[z].y + sp) { tsMarks.push({ x: tsg[z].x0, num: tsg[z].c - 0xE080, den: tsg[z + 1].c - 0xE080 }); z++; } }
+    else {
+      // stacked digits: pair by centre (the wider lower digit can start left of the upper one)
+      var tsUsed = [];
+      tsg.forEach(function (g, z) {
+        if (tsUsed[z]) return; var cx = (g.x0 + g.x1) / 2;
+        for (var w = 0; w < tsg.length; w++) {
+          if (w === z || tsUsed[w]) continue; var h = tsg[w];
+          if (Math.abs((h.x0 + h.x1) / 2 - cx) < sp * 0.6 && Math.abs(h.y - g.y) > sp * 0.8 && Math.abs(h.y - g.y) < sp * 3.2) {
+            var up = h.y < g.y ? h : g, dn = h.y < g.y ? g : h; tsUsed[z] = tsUsed[w] = 1;
+            tsMarks.push({ x: Math.min(up.x0, dn.x0), num: up.c - 0xE080, den: dn.c - 0xE080 }); break;
+          }
+        }
+      });
+      tsMarks.sort(function (a, b) { return a.x - b.x; });
+    }
     // split into bars
     var out = [], edges = D.bars;
     for (var bi = 0; bi < edges.length - 1; bi++) {
@@ -3154,10 +3227,12 @@ var PdfTab = (function () {
         if (anyT && Math.abs(sumT - len) > 0.01 && Math.abs(sumN - len) < 0.01) bb.forEach(function (b) { if (b.tup) { b.dur /= b.tupF; b.tup = null; } });
         var known = 0, unk = [];
         bb.forEach(function (b) { if (b.dur == null) unk.push(b); else known += b.dur; });
+        if (!unk.length && known < len - 0.01 && !OFF.pdfhalf) halfFill(bb, len - known, edges[bi + 1], sp);
         unk.forEach(function (b) { b.dur = Math.max(0.25, (len - known) / unk.length); });
       }
       out.push({ labels: labels.filter(function (w) { return w.x0 > edges[bi] - sp * 2 && w.x0 <= edges[bi + 1] - sp; }).map(function (w) { return w.s; }), beats: bb, ts: ts.slice(), tempo: tempo && tempo.x > edges[bi] - sp * 6 && tempo.x <= edges[bi + 1] ? tempo.bpm : null, xs: [edges[bi], edges[bi + 1]] });
       if (tempo && out[out.length - 1].tempo) tempo = null;
+      if (window.__pdfDbg) window.__pdfDbg.push({ sp: sp, top: top, bot: bot, xs: [edges[bi], edges[bi + 1]], b: bb.map(function (b) { return [Math.round(b.x * 10) / 10, b.dur, b.rest ? 'r' : b.notes.length ? 'n' : 't', b.sl && Math.round(b.sl * 100) / 100, b.nl, b.fl, b.dot]; }) });
     }
     if (tempo && out.length) out[0].tempo = tempo.bpm;
     return { bars: out, ts: ts };
@@ -3239,6 +3314,7 @@ var PdfTab = (function () {
   function build(pages) {
     var allText = pages.reduce(function (s, p) { return s + p.text.length; }, 0);
     if (!allText) throw new Error('글자 정보가 없는 PDF예요 (스캔 이미지). Guitar Pro·MuseScore에서 내보낸 PDF나 텍스트 타브 PDF를 올려 주세요.');
+    if (window.__pdfDbg) window.__pdfPages = pages;
     var p1 = textLines(pages[0].text);
     // staves per page + systems (staves whose bar lines line up belong to the same system)
     var staffList = [];
