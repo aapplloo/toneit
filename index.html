@@ -4755,6 +4755,7 @@ var LocalTab = (function () {
         if (/\d/.test(tk.s)) cur.d.push(tk);
         else if (tk.s === '(' || tk.s === ')') cur.ghost = true;
         else if (tk.s === '<' || tk.s === '>') cur.harm = true;
+        else if (tk.s === 'X' && !OFF.weakX && tk.score < 0.62 && !(function () { var xc = (tk.a + tk.b) / 2, hw = (tk.b - tk.a + 1) / 2, dyM = Math.round(sp * 0.3); for (var dx = -2; dx <= 2; dx++) for (var dyc = -dyM; dyc <= dyM; dyc++) if (arms(Math.round(xc + dx), hw, dyc)) return true; return false; })()) { return; } // a weak X must show its four arms (an arc or slur crossing the line can read as X)
         else if (tk.s === 'X') { if (cur.d.length) { flush(); cur = { a: tk.a, b: tk.b, d: [], ghost: false, harm: false, dead: true, unsure: tk.score < 0.65 }; } else { cur.dead = true; cur.unsure = tk.score < 0.65; } }
       });
       flush();
@@ -5164,6 +5165,13 @@ var LocalTab = (function () {
             on += q[j9];
           }
         }
+      }
+      // every beat has its length but the bar is still short, with a long empty stretch after the last beat
+      // (a let-ring, a scrape squiggle): the last beat holds to the bar line
+      if (!OFF.tailfill && q.length >= 3 && q.every(function (v) { return v; }) && len - sum >= 0.24) {
+        var nb2 = bar.beats.length, last2 = bar.beats[nb2 - 1], t0x = bar.beats[0].x, tq = sum - q[nb2 - 1];
+        var pxq = tq > 0 ? (last2.x - t0x) / tq : 0;
+        if (pxq > 0 && bar.R - last2.x >= (q[nb2 - 1] + (len - sum)) * pxq * 0.7) { q[nb2 - 1] += len - sum; sum = len; }
       }
       var ok = q.every(function (v) { return v; }) && Math.abs(sum - len) <= len * 0.08;
       if (opt.dbgBeats) opt.dbgBeats.push(bar.beats.map(function (b, j) { return [Math.round(b.x), b.rest ? 'r' : b.slash ? '/' : b.n.map(function (n) { return n.s + ':' + n.fret; }).join(','), b.stem ? (b.stem.up ? 'U' : 'D') + Math.round(b.stem.len) : '-', q[j], b.ext]; }));
