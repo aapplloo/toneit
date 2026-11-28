@@ -4254,6 +4254,22 @@ var LocalTab = (function () {
         LY[i].push(best);
       }
     }
+    // the six lines keep their spacing: where digits crowd a piece of one line (TAB numbers blank the line out
+    // around them), a row through the numbers can outscore the line itself — pull such a line back in step
+    if (!OFF.lysnap) for (k = 0; k < nseg; k++) {
+      var dv = [], sl2 = [];
+      for (i = 0; i < 6; i++) dv.push(LY[i][k] - (st.top + i * sp + offs[k]));
+      for (i = 0; i < 6; i++) for (var j2 = i + 1; j2 < 6; j2++) sl2.push((dv[j2] - dv[i]) / (j2 - i));
+      sl2.sort(function (p, q) { return p - q; });
+      var slope = sl2[sl2.length >> 1], ics = dv.map(function (v, ii) { return v - slope * ii; }).sort(function (p, q) { return p - q; }), ic = (ics[2] + ics[3]) / 2;
+      for (i = 0; i < 6; i++) {
+        var fit = ic + slope * i;
+        if (Math.abs(dv[i] - fit) <= Math.max(1.5, sp * 0.12)) continue;
+        var xa2 = Math.round(X0 + k * segW), xb2 = Math.round(X0 + (k + 1) * segW), yf = st.top + i * sp + offs[k] + fit, bst = Math.round(yf), bcc = -1;
+        for (var dy2 = -1; dy2 <= 1; dy2++) { var yy2 = Math.round(yf + dy2), cc = 0; for (x = xa2; x < xb2; x++) if (dark(x, yy2)) cc++; if (cc > bcc) { bcc = cc; bst = yy2; } }
+        LY[i][k] = bst;
+      }
+    }
     function lineY(li, xx) {
       var u = (xx - X0) / segW - 0.5, k0 = Math.max(0, Math.min(nseg - 1, Math.floor(u))), k1 = Math.min(nseg - 1, k0 + 1), f = Math.max(0, Math.min(1, u - k0));
       return Math.round(LY[li][k0] * (1 - f) + LY[li][k1] * f);
@@ -4453,6 +4469,7 @@ var LocalTab = (function () {
           if ((t0 !== ya3 || t1 !== yb3) && wide >= sp * 0.35 && !thinAll) { ya3 = t0; yb3 = t1; }
         }
         var hh = yb3 - ya3 + 1;
+        if (opt.dbgRun) opt.dbgRun.push([i, a0, b0, 'ext', Math.round(lyc), Math.round(cutA[0]), cutA[1], Math.round(yTopC), ya3, yb3]);
         // a solid little block on a line is a whole/half rest, not a number (an 8 has holes)
         if (!OFF.block && hh <= sp * 0.55 && b0 - a0 + 1 >= sp * 0.35 && b0 - a0 + 1 <= sp * 1.0) {
           var fillN = 0, fillT = 0; for (xx = a0; xx <= b0; xx++) for (yy = ya3; yy <= yb3; yy++) { fillT++; if (dark(xx, yy)) fillN++; }
@@ -4668,12 +4685,12 @@ var LocalTab = (function () {
       }
     }
 
-    // an unsure digit takes its runner-up reading when nearby notes on the same string agree with that
+    // (opt-in) an unsure digit takes its runner-up reading when nearby notes on the same string agree with that
     notes.forEach(function (n) {
       if (n.alt == null) return;
       var near = notes.filter(function (m) { return m !== n && m.s === n.s && !m.unsure && Math.abs(m.x - n.x) < sp * 14; }).sort(function (p, q) { return Math.abs(p.x - n.x) - Math.abs(q.x - n.x); }).slice(0, 4);
       var forAlt = near.filter(function (m) { return m.fret === n.alt; }).length, forCur = near.filter(function (m) { return m.fret === n.fret; }).length;
-      if (!OFF.noalt && forAlt > forCur && (forAlt >= 2 || n.unsure || OFF.alt1)) n.fret = n.alt; // one neighbour alone is not enough to overrule a clear reading
+      if (OFF.alton && forAlt > forCur && (forAlt >= 2 || n.unsure)) n.fret = n.alt; // off: overruling a digit by its neighbours turned more right readings wrong than it fixed (repeated 6s turned a lone 5 into 6) // one neighbour alone is not enough to overrule a clear reading
     });
 
     // time signature: a tall pair of digits right after a bar line (the TAB clef at a system start is skipped)
